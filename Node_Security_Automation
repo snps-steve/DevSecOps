@@ -1,0 +1,210 @@
+# .github/workflows/security-comprehensive.yml
+name: Comprehensive Security Scan
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * 1,4'
+  workflow_dispatch:
+    inputs:
+      severity:
+        description: 'Minimum severity level'
+        required: false
+        default: 'HIGH'
+        type: choice
+        options:
+          - CRITICAL
+          - HIGH
+          - MEDIUM
+          - LOW
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # NPM Audit with formatted output
+      - name: Run npm audit
+        id: npm-audit
+        continue-on-error: true
+        run: |
+          # Run audit and capture results
+          npm audit --json > npm-audit-results.json || true
+          
+          # Generate markdown report
+          echo "## 📦 NPM Dependency Audit" >> security-report.md
+          echo "" >> security-report.md
+          
+          if [ -f npm-audit-results.json ]; then
+            VULNS=$(jq '.metadata.vulnerabilities' npm-audit-results.json)
+            TOTAL=$(echo $VULNS | jq '.total')
+            
+            if [ "$TOTAL" -gt 0 ]; then
+              echo "⚠️ **Found $TOTAL vulnerabilities**" >> security-report.md
+              echo "" >> security-report.md
+              echo "| Severity | Count |" >> security-report.md
+              echo "|----------|-------|" >> security-report.md
+              echo "| Critical | $(echo $VULNS | jq '.critical') |" >> security-report.md
+              echo "| High | $(echo $VULNS | jq '.high') |" >> security-report.md
+              echo "| Moderate | $(echo $VULNS | jq '.moderate') |" >> security-report.md
+              echo "| Low | $(echo $VULNS | jq '.low') |" >> security-report.md
+            else
+              echo "✅ **No vulnerabilities found!**" >> security-report.md
+            fi
+          fi
+          echo "" >> security-report.md
+
+      # ESLint Security Analysis
+      - name: Run ESLint
+        id: eslint
+        continue-on-error: true
+        run: |
+          echo "## 🔍 Code Quality & Security (ESLint)" >> security-report.md
+          echo "" >> security-report.md
+          
+          if npm run lint; then
+            echo "✅ **No ESLint issues found!**" >> security-report.md
+          else
+            echo "⚠️ **ESLint found issues** - Check workflow logs for details" >> security-report.md
+          fi
+          echo "" >> security-report.md
+
+      # TypeScript Check
+      - name: TypeScript type check
+        continue-on-error: true
+        run: |
+          echo "## 📘 TypeScript Type Safety" >> security-report.md
+          echo "" >> security-report.md
+          
+          if npm run type-check 2>&1 | tee typescript-output.log; then
+            echo "✅ **No type errors found!**" >> security-report.md
+          else
+            echo "⚠️ **Type errors detected:**" >> security-report.md
+            echo '```' >> security-report.md
+            grep -E "error TS" typescript-output.log | head -20 >> security-report.md
+            echo '```' >> security-report.md
+          fi
+          echo "" >> security-report.md
+
+      # Trivy Scan with Table Format
+      - name: Run Trivy scanner
+        uses: aquasecurity/trivy-action@master
+        continue-on-error: true
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: ${{ github.event.inputs.severity || 'CRITICAL,HIGH' }}
+          format: 'table'
+          output: 'trivy-results.txt'
+
+      - name: Process Trivy results
+        continue-on-error: true
+        run: |
+          echo "## 🛡️ Trivy Security Scan" >> security-report.md
+          echo "" >> security-report.md
+          
+          if [ -f trivy-results.txt ]; then
+            if grep -q "Total: 0" trivy-results.txt; then
+              echo "✅ **No vulnerabilities found!**" >> security-report.md
+            else
+              echo "⚠️ **Vulnerabilities detected:**" >> security-report.md
+              echo '```' >> security-report.md
+              cat trivy-results.txt | head -50 >> security-report.md
+              echo '```' >> security-report.md
+            fi
+          fi
+          echo "" >> security-report.md
+
+      # License Check
+      - name: Check licenses
+        continue-on-error: true
+        run: |
+          echo "## 📜 License Compliance" >> security-report.md
+          echo "" >> security-report.md
+          
+          npx license-checker --production --summary | tee license-summary.txt
+          
+          echo "**License Summary:**" >> security-report.md
+          echo '```' >> security-report.md
+          cat license-summary.txt >> security-report.md
+          echo '```' >> security-report.md
+          echo "" >> security-report.md
+
+      # Generate Summary
+      - name: Generate GitHub Summary
+        if: always()
+        run: |
+          # Copy report to GitHub summary
+          cat security-report.md >> $GITHUB_STEP_SUMMARY
+          
+          # Add metadata
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "📅 **Scan Date**: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "🔄 **Triggered by**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "🌿 **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+
+      # Save reports as artifacts
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports-${{ github.run_number }}
+          path: |
+            security-report.md
+            npm-audit-results.json
+            trivy-results.txt
+            license-summary.txt
+            typescript-output.log
+          retention-days: 30
+
+      # Create issue on failure (scheduled runs only)
+      - name: Create issue for vulnerabilities
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('security-report.md', 'utf8');
+            
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 Security Scan Alert - ${new Date().toISOString().split('T')[0]}`,
+              body: report + `\n\n[View Full Results](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              labels: ['security', 'automated']
+            });
+
+      # Comment on PR (if applicable)
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('security-report.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## 🔐 Security Scan Results\n\n' + report
+            });
