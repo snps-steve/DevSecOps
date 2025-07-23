@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Script: blackduck_scan_accuracy.sh  
-# Version: 2.0.0
+# Script: blackduck_scan_accuracy.sh
+# Version: 2.0.1 (Security Enhanced to obfuscate the BD Server's API Token on the screen)
 #
 # Type: Interactive Tool
 # Purpose: Educational Black Duck scan wrapper that helps users understand different
@@ -11,7 +11,7 @@
 #
 #          This script then prints the output of the command to the screen to show
 #          what those options actually were.
-# 
+#
 # Environment Requirements:
 #   BLACKDUCK_URL       - Your Black Duck instance URL
 #   BLACKDUCK_API_TOKEN - Your API token
@@ -41,6 +41,60 @@ RED='\033[0;31m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Function to safely display API tokens with obfuscation
+obfuscate_token() {
+    local token="$1"
+    local show_chars="${2:-8}"  # Default to 8 characters, but allow override
+
+    if [ -z "$token" ]; then
+        echo "[NOT SET]"
+        return 1
+    fi
+
+    local token_length=${#token}
+
+    if [ $token_length -le $show_chars ]; then
+        # If token is shorter than show_chars, show all but last 2 chars
+        local visible_chars=$((token_length - 2))
+        if [ $visible_chars -lt 1 ]; then
+            echo "***"
+        else
+            echo "${token:0:$visible_chars}***"
+        fi
+    else
+        # Show first N characters and obfuscate the rest
+        local visible_part="${token:0:$show_chars}"
+        local hidden_length=$((token_length - show_chars))
+        local asterisks=$(printf "%*s" $hidden_length | tr ' ' '*')
+        echo "${visible_part}${asterisks}"
+    fi
+}
+
+# Function to safely display URL (obfuscate any embedded credentials)
+obfuscate_url() {
+    local url="$1"
+
+    if [ -z "$url" ]; then
+        echo "[NOT SET]"
+        return 1
+    fi
+
+    # Check if URL contains credentials (user:pass@host pattern)
+    if [[ "$url" =~ ://([^:]+):([^@]+)@(.+) ]]; then
+        local protocol="${url%%://*}"
+        local user="${BASH_REMATCH[1]}"
+        local pass="${BASH_REMATCH[2]}"
+        local host="${BASH_REMATCH[3]}"
+
+        # Obfuscate the password part
+        local obfuscated_pass=$(obfuscate_token "$pass" 3)
+        echo "${protocol}://${user}:${obfuscated_pass}@${host}"
+    else
+        # No credentials in URL, safe to display
+        echo "$url"
+    fi
+}
+
 # Binary file patterns
 BINARY_PATTERNS=(
     "*.exe" "*.dll" "*.msi"           # Windows
@@ -61,21 +115,21 @@ detect_jar_path() {
         echo "$DETECT_JAR"
         return 0
     fi
-    
+
     # Check for the version file in the standard location
     local detect_dir="$HOME/detect/download"
     local version_file="$detect_dir/detect-last-downloaded-jar.txt"
-    
+
     if [ -f "$version_file" ]; then
         local jar_name=$(cat "$version_file" | tr -d '\n')
         local jar_path="$detect_dir/$jar_name"
-        
+
         if [ -f "$jar_path" ]; then
             echo "$jar_path"
             return 0
         fi
     fi
-    
+
     # Fallback: look for any detect jar in the download directory
     if [ -d "$detect_dir" ]; then
         local latest_jar=$(ls -t "$detect_dir"/detect-*.jar 2>/dev/null | head -1)
@@ -84,7 +138,7 @@ detect_jar_path() {
             return 0
         fi
     fi
-    
+
     # Last resort: check common locations
     for location in \
         "$HOME/detect/synopsys-detect-latest.jar" \
@@ -97,7 +151,7 @@ detect_jar_path() {
             return 0
         fi
     done
-    
+
     return 1
 }
 
@@ -130,25 +184,25 @@ detect_containers() {
     if [ "$DOCKER_AVAILABLE" != "true" ]; then
         return 1
     fi
-    
+
     # Get the project name to search for
     local search_name="$1"
     if [ -z "$search_name" ]; then
         return 1
     fi
-    
+
     echo -e "${CYAN}Scanning for related containers...${NC}"
-    
+
     # Clean project name for matching (remove special chars, convert to lowercase)
     local clean_name=$(echo "$search_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]//g' | sed 's/-production$//')
-    
+
     # Extract common prefixes from project name (split by hyphens)
     local name_parts=($(echo "$clean_name" | tr '-' ' '))
     local search_patterns=()
-    
+
     # Build search patterns from name parts
     search_patterns+=("$clean_name")  # Full name
-    
+
     # Create partial patterns
     if [ ${#name_parts[@]} -gt 2 ]; then
         for ((i=2; i<=${#name_parts[@]}; i++)); do
@@ -156,23 +210,23 @@ detect_containers() {
             search_patterns+=("$partial")
         done
     fi
-    
+
     # Also try first two parts only
     if [ ${#name_parts[@]} -ge 2 ]; then
         search_patterns+=("${name_parts[0]}-${name_parts[1]}")
     fi
-    
+
     # And just the first part
     search_patterns+=("${name_parts[0]}")
-    
+
     # Remove duplicates
     search_patterns=($(echo "${search_patterns[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-    
+
     echo -e "${CYAN}Search patterns: ${search_patterns[*]}${NC}"
-    
+
     # Get all containers (running and stopped)
     local all_containers=$(docker ps -a --format "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}")
-    
+
     # Look for containers matching project patterns
     CONTAINERS_FOUND=""
     local container_count=0
@@ -181,7 +235,7 @@ detect_containers() {
         if [ -z "$name" ] || [ -z "$id" ]; then
             continue
         fi
-        
+
         # Check each pattern
         for pattern in "${search_patterns[@]}"; do
             # More flexible matching
@@ -201,7 +255,7 @@ detect_containers() {
                     fi
                 fi
                 ((container_count++))
-                
+
                 # Display the found container
                 if [[ "$status" =~ ^Up ]]; then
                     echo -e "${GREEN}  • $name ($image) - Running${NC}"
@@ -212,7 +266,7 @@ detect_containers() {
             fi
         done
     done <<< "$all_containers"
-    
+
     if [ $container_count -gt 0 ]; then
         echo -e "${GREEN}✓ Found ${container_count} potentially related container(s)${NC}"
         return 0
@@ -228,7 +282,7 @@ detect_containers() {
 check_container_size() {
     local container_name=$1
     local size_output=$(docker ps -a --filter "name=$container_name" --format "table {{.Size}}" | tail -n 1)
-    
+
     # Extract numeric size
     if [[ "$size_output" =~ ([0-9.]+)GB ]]; then
         local size_gb=${BASH_REMATCH[1]}
@@ -247,24 +301,24 @@ scan_container() {
     local container_name=$2
     local container_image=$3
     local temp_file="/tmp/${container_name}_${TIMESTAMP}.tar"
-    
+
     echo -e "\n${BLUE}Saving container $container_name...${NC}"
-    
+
     # Check container size
     check_container_size "$container_name"
-    
+
     # Save the image (not the container ID)
     echo -e "${CYAN}Saving image $container_image used by container $container_name...${NC}"
     if docker save "$container_image" -o "$temp_file"; then
         echo -e "${GREEN}✓ Container image saved to temporary file${NC}"
-        
+
         # Get file size
         local file_size=$(du -h "$temp_file" | cut -f1)
         echo -e "${CYAN}  File size: $file_size${NC}"
-        
+
         # Scan the container
         echo -e "\n${BLUE}Scanning container $container_name...${NC}"
-        
+
         java -jar $DETECT_JAR \
             --blackduck.url=$BLACKDUCK_URL \
             --blackduck.api.token=$BLACKDUCK_API_TOKEN \
@@ -276,14 +330,14 @@ scan_container() {
             --detect.tools=CONTAINER_SCAN \
             --detect.container.scan.file.path="$temp_file" \
             --detect.output.path="/tmp/detect-container-$container_name"
-        
+
         local scan_result=$?
-        
+
         # Clean up
         echo -e "\n${BLUE}Cleaning up temporary files...${NC}"
         rm -f "$temp_file"
         echo -e "${GREEN}✓ Temporary files removed${NC}"
-        
+
         if [ $scan_result -eq 0 ]; then
             echo -e "${GREEN}✓ Container scan complete for $container_name${NC}"
         else
@@ -294,26 +348,28 @@ scan_container() {
     fi
 }
 
-# Function to check prerequisites
+# Updated check_prerequisites function with secure credential display
 check_prerequisites() {
     local missing=0
-    
+
     echo -e "${CYAN}Checking prerequisites...${NC}"
-    
+
     if [ -z "$BLACKDUCK_URL" ]; then
         echo -e "${RED}✗ BLACKDUCK_URL not set${NC}"
         missing=1
     else
-        echo -e "${GREEN}✓ BLACKDUCK_URL found${NC}"
+        local safe_url=$(obfuscate_url "$BLACKDUCK_URL")
+        echo -e "${GREEN}✓ BLACKDUCK_URL found: ${safe_url}${NC}"
     fi
-    
+
     if [ -z "$BLACKDUCK_API_TOKEN" ]; then
         echo -e "${RED}✗ BLACKDUCK_API_TOKEN not set${NC}"
         missing=1
     else
-        echo -e "${GREEN}✓ BLACKDUCK_API_TOKEN found${NC}"
+        local safe_token=$(obfuscate_token "$BLACKDUCK_API_TOKEN" 8)
+        echo -e "${GREEN}✓ BLACKDUCK_API_TOKEN found: ${safe_token}${NC}"
     fi
-    
+
     if [ -z "$DETECT_JAR" ] || [ ! -f "$DETECT_JAR" ]; then
         echo -e "${RED}✗ Detect JAR not found${NC}"
         echo -e "${YELLOW}  Please download from: https://detect.synopsys.com${NC}"
@@ -322,10 +378,10 @@ check_prerequisites() {
     else
         echo -e "${GREEN}✓ Detect JAR found: $(basename $DETECT_JAR)${NC}"
     fi
-    
+
     # Check Docker
     check_docker
-    
+
     if [ $missing -eq 1 ]; then
         echo ""
         echo -e "${RED}Missing prerequisites. Please:${NC}"
@@ -343,7 +399,7 @@ detect_project_info() {
     local DEFAULT_NAME=""
     local DEFAULT_VERSION=""
     local PROJECT_TYPE=""
-    
+
     if [ -f "package.json" ]; then
         DEFAULT_NAME=$(grep '"name"' package.json | head -1 | cut -d'"' -f4 || echo "")
         DEFAULT_VERSION=$(grep '"version"' package.json | head -1 | cut -d'"' -f4 || echo "")
@@ -370,7 +426,7 @@ detect_project_info() {
     else
         PROJECT_TYPE="unknown"
     fi
-    
+
     echo "$DEFAULT_NAME|$DEFAULT_VERSION|$PROJECT_TYPE"
 }
 
@@ -378,7 +434,7 @@ detect_project_info() {
 explain_scan() {
     local scan_type=$1
     echo -e "\n${CYAN}═══ What This Scan Does ═══${NC}"
-    
+
     case $scan_type in
         "production")
             echo "• Scans ONLY your build/production directory"
@@ -419,7 +475,7 @@ explain_scan() {
 # Function to detect build directories
 detect_build_directories() {
     local FOUND_DIRS=()
-    
+
     # JavaScript/TypeScript
     [ -d ".next" ] && FOUND_DIRS+=(".next")
     [ -d "build" ] && FOUND_DIRS+=("build")
@@ -427,28 +483,28 @@ detect_build_directories() {
     [ -d "out" ] && FOUND_DIRS+=("out")
     [ -d "public" ] && [ -f "package.json" ] && FOUND_DIRS+=("public")
     [ -d ".nuxt" ] && FOUND_DIRS+=(".nuxt")
-    
+
     # Java
     [ -d "target" ] && FOUND_DIRS+=("target")
     [ -d "target/classes" ] && FOUND_DIRS+=("target/classes")
-    
+
     # Python
     [ -d "_build" ] && FOUND_DIRS+=("_build")
     [ -d "build" ] && [ -f "setup.py" ] && FOUND_DIRS+=("build")
     [ -d "dist" ] && [ -f "setup.py" ] && FOUND_DIRS+=("dist")
-    
+
     # .NET
     [ -d "bin/Release" ] && FOUND_DIRS+=("bin/Release")
     [ -d "bin/Debug" ] && FOUND_DIRS+=("bin/Debug")
     [ -d "publish" ] && FOUND_DIRS+=("publish")
-    
+
     # Go
     [ -d "bin" ] && FOUND_DIRS+=("bin")
-    
+
     # Rust
     [ -d "target/release" ] && FOUND_DIRS+=("target/release")
     [ -d "target/debug" ] && FOUND_DIRS+=("target/debug")
-    
+
     echo "${FOUND_DIRS[@]}"
 }
 
@@ -456,13 +512,13 @@ detect_build_directories() {
 get_project_info() {
     local suffix=$1
     local project_data=$2
-    
+
     IFS='|' read -r DEFAULT_NAME DEFAULT_VERSION PROJECT_TYPE <<< "$project_data"
-    
+
     if [ -n "$DEFAULT_NAME" ] || [ -n "$DEFAULT_VERSION" ]; then
         echo -e "${CYAN}Detected: ${GREEN}$DEFAULT_NAME${NC} v${GREEN}$DEFAULT_VERSION${NC} (${PROJECT_TYPE})"
     fi
-    
+
     # Project name
     if [ -n "$DEFAULT_NAME" ]; then
         read -p "$(echo -e ${GREEN}Project name [$DEFAULT_NAME$suffix]: ${NC})" PROJECT_NAME
@@ -471,7 +527,7 @@ get_project_info() {
         read -p "$(echo -e ${GREEN}Project name: ${NC})" PROJECT_NAME
         PROJECT_NAME="$PROJECT_NAME$suffix"
     fi
-    
+
     # Project version
     if [ -n "$DEFAULT_VERSION" ]; then
         read -p "$(echo -e ${GREEN}Version [$DEFAULT_VERSION]: ${NC})" PROJECT_VERSION
@@ -479,7 +535,7 @@ get_project_info() {
     else
         read -p "$(echo -e ${GREEN}Version: ${NC})" PROJECT_VERSION
     fi
-    
+
     # Export for use in calling context
     export PROJECT_NAME PROJECT_VERSION PROJECT_TYPE
 }
@@ -488,12 +544,12 @@ get_project_info() {
 get_exclude_dev_flag() {
     local project_type=$1
     local include_dev=$2
-    
+
     if [ "$include_dev" = "y" ]; then
         echo ""
         return
     fi
-    
+
     case $project_type in
         npm)
             echo "--detect.npm.dependency.types.excluded=DEV"
@@ -516,9 +572,9 @@ get_exclude_dev_flag() {
 # Function to select build directory
 select_build_directory() {
     local FOUND_DIRS=($@)
-    
+
     echo -e "\n${CYAN}Detecting build directories...${NC}"
-    
+
     if [ ${#FOUND_DIRS[@]} -gt 0 ]; then
         echo -e "${GREEN}Found the following build directories:${NC}"
         for i in "${!FOUND_DIRS[@]}"; do
@@ -526,9 +582,9 @@ select_build_directory() {
             echo "  $((i+1))) ${FOUND_DIRS[$i]} (${dir_size})"
         done
         echo "  $((${#FOUND_DIRS[@]}+1))) Enter custom directory"
-        
+
         read -p "$(echo -e ${GREEN}Select directory [1-$((${#FOUND_DIRS[@]}+1))]: ${NC})" dir_choice
-        
+
         if [ "$dir_choice" -ge 1 ] && [ "$dir_choice" -le ${#FOUND_DIRS[@]} ] 2>/dev/null; then
             BUILD_DIR="${FOUND_DIRS[$((dir_choice-1))]}"
             echo -e "${GREEN}✓ Selected: $BUILD_DIR${NC}"
@@ -543,17 +599,17 @@ select_build_directory() {
         echo "Common build directories include: build, dist, target, bin, out"
         read -p "$(echo -e ${GREEN}Enter your build directory path: ${NC})" BUILD_DIR
     fi
-    
+
     # Validate the directory exists
     if [ ! -d "$BUILD_DIR" ]; then
         echo -e "${RED}ERROR: Directory '$BUILD_DIR' not found${NC}"
         echo "Please run your build command first"
         return 1
     fi
-    
+
     BUILD_SIZE=$(du -sh "$BUILD_DIR" | cut -f1)
     echo -e "${GREEN}✓ Using build directory: $BUILD_DIR (${BUILD_SIZE})${NC}\n"
-    
+
     export BUILD_DIR
     return 0
 }
@@ -561,18 +617,22 @@ select_build_directory() {
 # Function to execute scan with consistent formatting
 execute_scan() {
     local scan_cmd=$1
-    
+
     echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}Command to be executed:${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-    
-    # Display the command with proper formatting
-    echo -e "${YELLOW}$scan_cmd${NC}" | sed 's/ --/\n    --/g' | sed 's/java -jar/java -jar/g'
-    
+
+    # Create obfuscated version for display
+    local obfuscated_token=$(obfuscate_token "$BLACKDUCK_API_TOKEN" 8)
+    local display_cmd="${scan_cmd//$BLACKDUCK_API_TOKEN/$obfuscated_token}"
+
+    # Display the command with obfuscated token and proper formatting
+    echo -e "${YELLOW}$display_cmd${NC}" | sed 's/ --/\n    --/g' | sed 's/java -jar/java -jar/g'
+
     echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}Key parameters explained:${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
+
     # Explain key parameters based on what's in the command
     if [[ "$scan_cmd" =~ "--detect.tools=DETECTOR" ]] && [[ "$scan_cmd" =~ "signature.scanner.disabled=true" ]]; then
         echo -e "${GREEN}--detect.tools=DETECTOR${NC}"
@@ -593,28 +653,28 @@ execute_scan() {
         echo -e "${GREEN}--detect.container.scan.file.path${NC}"
         echo "  → Points to the saved container tar file"
     fi
-    
+
     if [[ "$scan_cmd" =~ "--detect.npm.dependency.types.excluded=DEV" ]]; then
         echo -e "${GREEN}--detect.npm.dependency.types.excluded=DEV${NC}"
         echo "  → Excludes npm devDependencies for accuracy"
     fi
-    
+
     if [[ "$scan_cmd" =~ "--detect.blackduck.signature.scanner.paths=" ]]; then
         echo -e "${GREEN}--detect.blackduck.signature.scanner.paths${NC}"
         echo "  → Limits signature scanning to specific directory"
     fi
-    
+
     if [[ "$scan_cmd" =~ "--detect.excluded.directories=" ]]; then
         echo -e "${GREEN}--detect.excluded.directories${NC}"
         echo "  → Skips scanning these directories"
     fi
-    
+
     echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}Executing scan...${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-    
+
     eval $scan_cmd
-    
+
     if [ $? -eq 0 ]; then
         echo -e "\n${GREEN}✓ Scan complete${NC}"
     else
@@ -640,9 +700,9 @@ detect_binary_files() {
     local found_patterns=()
     local example_files=()
     local binary_count=0
-    
+
     echo -e "${CYAN}Scanning for binary files...${NC}"
-    
+
     for pattern in "${BINARY_PATTERNS[@]}"; do
         # Use find to look for files matching the pattern, excluding common directories
         local files=$(find . -type f -name "$pattern" \
@@ -654,7 +714,7 @@ detect_binary_files() {
             -not -path "./venv/*" \
             -not -path "./.env/*" \
             2>/dev/null | head -5)
-        
+
         if [ -n "$files" ]; then
             found_patterns+=("$pattern")
             # Get first example for display
@@ -665,7 +725,7 @@ detect_binary_files() {
             ((binary_count += count))
         fi
     done
-    
+
     if [ ${#found_patterns[@]} -gt 0 ]; then
         FOUND_BINARIES=$(IFS=','; echo "${found_patterns[*]}")
         BINARY_EXAMPLES=$(IFS=', '; echo "${example_files[*]}")
@@ -682,7 +742,7 @@ detect_binary_files() {
 # Main script starts here
 echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║   Black Duck SCA Scanner - Interactive Mode          ║${NC}"
-echo -e "${CYAN}║              Learn While You Scan v2.3               ║${NC}"
+echo -e "${CYAN}║            Learn While You Scan v2.3 (Secure)        ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -727,7 +787,7 @@ if [ "$DOCKER_AVAILABLE" = "true" ]; then
     echo -e "   • Best for: Container security assessment"
     echo -e "   • ${YELLOW}Requires BDSC license${NC}"
     echo ""
-    
+
     read -p "$(echo -e ${GREEN}Select strategy \(1-4\) [default: 2]: ${NC})" STRATEGY
 else
     read -p "$(echo -e ${GREEN}Select strategy \(1-3\) [default: 2]: ${NC})" STRATEGY
@@ -747,15 +807,15 @@ case $STRATEGY in
         echo -e "${BLUE}=== Production Build Scan ===${NC}"
         echo -e "${YELLOW}Accuracy: ★★★★ (Most accurate - focused signature scan)${NC}"
         explain_scan "production"
-        
+
         # Select build directory
         if ! select_build_directory "${FOUND_DIRS[@]}"; then
             exit 1
         fi
-        
+
         get_project_info "-production" "$PROJECT_DATA"
         PROJECT_NAME_FOR_CONTAINERS="$PROJECT_NAME"
-        
+
         # Build command
         SCAN_CMD="$BASE_CMD \
             --blackduck.url=$BLACKDUCK_URL \
@@ -768,29 +828,29 @@ case $STRATEGY in
             --detect.detector.search.enabled=false \
             --detect.blackduck.signature.scanner.paths=$BUILD_DIR \
             --detect.blackduck.signature.scanner.exclusion.patterns=\"*.map,*.log,*.cache,*cache*,BUILD_ID,*.tmp,*.temp,*.swp\""
-             	
+
 
         echo -e "\n${YELLOW}Ready to scan production build...${NC}"
         read -p "$(echo -e ${GREEN}Continue? \(y/n\) [default: y]: ${NC})" confirm
         confirm=${confirm:-y}
-        
+
         if [ "$confirm" = "y" ]; then
             execute_scan "$SCAN_CMD"
         fi
         ;;
-        
+
     2) # Dependencies Only
         echo -e "${BLUE}=== Dependencies Only Scan ===${NC}"
         explain_scan "dependencies"
-        
+
         get_project_info "" "$PROJECT_DATA"
         PROJECT_NAME_FOR_CONTAINERS="$PROJECT_NAME"
-        
+
         # Ask about dev dependencies
         echo ""
         read -p "$(echo -e ${GREEN}Include devDependencies? \(y/N\) [default: n]: ${NC})" include_dev
         include_dev=${include_dev:-n}
-        
+
         if [ "$include_dev" = "y" ]; then
             echo -e "${CYAN}→ Including ALL dependencies${NC}"
             echo -e "${YELLOW}Accuracy: ★★★ (Good - includes development tools)${NC}"
@@ -798,9 +858,9 @@ case $STRATEGY in
             echo -e "${YELLOW}→ Excluding devDependencies (recommended)${NC}"
             echo -e "${YELLOW}Accuracy: ★★★★ (Most accurate - production only)${NC}"
         fi
-        
+
         DEV_FLAG=$(get_exclude_dev_flag "$PROJECT_TYPE" "$include_dev")
-        
+
         # Build command
         SCAN_CMD="$BASE_CMD \
             --blackduck.url=$BLACKDUCK_URL \
@@ -812,23 +872,23 @@ case $STRATEGY in
             --detect.tools=DETECTOR \
             --detect.blackduck.signature.scanner.disabled=true \
             $DEV_FLAG"
-        
+
         echo -e "\n${YELLOW}Ready to scan dependencies...${NC}"
         read -p "$(echo -e ${GREEN}Continue? \(y/n\) [default: y]: ${NC})" confirm
         confirm=${confirm:-y}
-        
+
         if [ "$confirm" = "y" ]; then
             execute_scan "$SCAN_CMD"
         fi
         ;;
-        
+
     3) # Full Analysis
         echo -e "${BLUE}=== Full Analysis Scan ===${NC}"
         explain_scan "full"
-        
+
         get_project_info "" "$PROJECT_DATA"
         PROJECT_NAME_FOR_CONTAINERS="$PROJECT_NAME"
-        
+
         # Ask what to scan
         echo ""
         echo -e "${YELLOW}What would you like to scan for signatures?${NC}"
@@ -840,13 +900,13 @@ case $STRATEGY in
         echo "   • Fewer false positives, clearer results"
         read -p "$(echo -e ${GREEN}Select \(1-2\) [default: 1]: ${NC})" scan_scope
         scan_scope=${scan_scope:-1}
-        
+
         if [ "$scan_scope" = "2" ]; then
             # Select build directory
             if ! select_build_directory "${FOUND_DIRS[@]}"; then
                 exit 1
             fi
-            
+
             echo -e "${YELLOW}Accuracy: ★★★ (Highly accurate - focused scan)${NC}"
             SIGNATURE_PATH="--detect.blackduck.signature.scanner.paths=$BUILD_DIR"
             SIGNATURE_EXCLUSIONS="--detect.blackduck.signature.scanner.exclusion.patterns=\"*.map,*.log,*.cache,*cache*,BUILD_ID,*.tmp,*.temp,*.swp\""
@@ -855,20 +915,20 @@ case $STRATEGY in
             SIGNATURE_PATH=""
             SIGNATURE_EXCLUSIONS="--detect.excluded.directories=.git,node_modules,vendor,.idea,.vscode,test,tests,spec,specs"
         fi
-        
+
         # Ask about dev dependencies
         echo ""
         read -p "$(echo -e ${GREEN}Include devDependencies? \(y/N\) [default: n]: ${NC})" include_dev
         include_dev=${include_dev:-n}
-        
+
         if [ "$include_dev" = "y" ]; then
             echo -e "${CYAN}→ Including ALL dependencies${NC}"
         else
             echo -e "${YELLOW}→ Excluding devDependencies (recommended)${NC}"
         fi
-        
+
         DEV_FLAG=$(get_exclude_dev_flag "$PROJECT_TYPE" "$include_dev")
-        
+
         # Build command
         SCAN_CMD="$BASE_CMD \
             --blackduck.url=$BLACKDUCK_URL \
@@ -881,42 +941,42 @@ case $STRATEGY in
             $DEV_FLAG \
             $SIGNATURE_PATH \
             $SIGNATURE_EXCLUSIONS"
-        
+
         echo -e "\n${YELLOW}This scan will take 3-5 minutes...${NC}"
         read -p "$(echo -e ${GREEN}Continue? \(y/n\) [default: y]: ${NC})" confirm
         confirm=${confirm:-y}
-        
+
         if [ "$confirm" = "y" ]; then
             execute_scan "$SCAN_CMD"
         fi
         ;;
-        
+
     4) # Container Scan
         if [ "$DOCKER_AVAILABLE" != "true" ]; then
             echo -e "${RED}Docker is not available. Please start Docker and try again.${NC}"
             exit 1
         fi
-        
+
         echo -e "${BLUE}=== Container Scan ===${NC}"
         echo -e "${YELLOW}Accuracy: ★★★★ (Most accurate - full container analysis)${NC}"
         explain_scan "container"
-        
+
         # Get base project name for container detection
         local temp_project_data=$PROJECT_DATA
         IFS='|' read -r temp_name temp_version temp_type <<< "$temp_project_data"
         if [ -z "$temp_name" ]; then
             read -p "$(echo -e ${GREEN}Enter project name for container detection: ${NC})" temp_name
         fi
-        
+
         PROJECT_NAME_FOR_CONTAINERS="$temp_name"
-        
+
         # Detect containers
         echo ""
         detect_containers "$temp_name"
-        
+
         if [ -n "$CONTAINERS_FOUND" ]; then
             echo -e "\n${BLUE}Select containers to scan:${NC}"
-            
+
             # Process each container (using ╬ as delimiter)
             IFS='╬' read -ra container_array <<< "$CONTAINERS_FOUND"
             for container_info in "${container_array[@]}"; do
@@ -924,17 +984,17 @@ case $STRATEGY in
                 if [ -z "$container_info" ]; then
                     continue
                 fi
-                
+
                 IFS='|' read -r id name image status <<< "$container_info"
-                
+
                 # Skip if we don't have valid data
                 if [ -z "$name" ] || [ -z "$image" ] || [ -z "$id" ]; then
                     continue
                 fi
-                
+
                 read -p "$(echo -e ${GREEN}Scan container \'$name\' \($image\)? \(Y/n\): ${NC})" scan_this
                 scan_this=${scan_this:-y}
-                
+
                 if [[ "${scan_this,,}" =~ ^(y|yes|)$ ]]; then
                     scan_container "$id" "$name" "$image"
                 else
@@ -942,18 +1002,18 @@ case $STRATEGY in
                 fi
             done
         fi
-        
+
         # Option to manually enter container
         echo ""
         read -p "$(echo -e ${GREEN}Enter additional container name/ID to scan \(or press Enter to skip\): ${NC})" manual_container
-        
+
         if [ -n "$manual_container" ]; then
             # Get container info
             container_info=$(docker ps -a --filter "name=$manual_container" --format "{{.ID}}|{{.Names}}|{{.Image}}" | head -1)
             if [ -z "$container_info" ]; then
                 container_info=$(docker ps -a --filter "id=$manual_container" --format "{{.ID}}|{{.Names}}|{{.Image}}" | head -1)
             fi
-            
+
             if [ -n "$container_info" ]; then
                 IFS='|' read -r id name image <<< "$container_info"
                 if [ -z "$PROJECT_NAME_FOR_CONTAINERS" ]; then
@@ -965,7 +1025,7 @@ case $STRATEGY in
             fi
         fi
         ;;
-        
+
     *)
         echo -e "${RED}Invalid choice. Please select 1-$([[ "$DOCKER_AVAILABLE" = "true" ]] && echo "4" || echo "3").${NC}"
         exit 1
@@ -975,28 +1035,28 @@ esac
 # After the main scan, check if we should offer container scanning
 if [ "$STRATEGY" != "4" ] && [ "$DOCKER_AVAILABLE" = "true" ]; then
     echo ""
-    
+
     # Detect containers based on project name if available
     if [ -n "$PROJECT_NAME_FOR_CONTAINERS" ]; then
         detect_containers "$PROJECT_NAME_FOR_CONTAINERS"
-        
+
         if [ -n "$CONTAINERS_FOUND" ]; then
             echo -e "\n${CYAN}════════════════════════════════════════════════════════${NC}"
             echo -e "${YELLOW}CONTAINER SCAN OPPORTUNITY${NC}"
             echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"
-            
+
             echo -e "\n${YELLOW}Note: Container scanning requires:${NC}"
             echo -e "• Black Duck Secure Container (BDSC) license"
             echo -e "• Match as a Service (MaaS) enabled"
             echo -e "• Black Duck 2023.10.0 or greater"
             echo ""
-            
+
             read -p "$(echo -e ${GREEN}Would you like to scan related containers? \(Y/n\): ${NC})" scan_containers_now
             scan_containers_now=${scan_containers_now:-y}
-            
+
             if [[ "${scan_containers_now,,}" =~ ^(y|yes|)$ ]]; then
                 echo -e "\n${BLUE}Select containers to scan:${NC}"
-                
+
                 # Process each container (using ╬ as delimiter)
                 IFS='╬' read -ra container_array <<< "$CONTAINERS_FOUND"
                 for container_info in "${container_array[@]}"; do
@@ -1004,17 +1064,17 @@ if [ "$STRATEGY" != "4" ] && [ "$DOCKER_AVAILABLE" = "true" ]; then
                     if [ -z "$container_info" ]; then
                         continue
                     fi
-                    
+
                     IFS='|' read -r id name image status <<< "$container_info"
-                    
+
                     # Skip if we don't have valid data
                     if [ -z "$name" ] || [ -z "$image" ] || [ -z "$id" ]; then
                         continue
                     fi
-                    
+
                     read -p "$(echo -e ${GREEN}Scan container \'$name\' \($image\)? \(Y/n\): ${NC})" scan_this
                     scan_this=${scan_this:-y}
-                    
+
                     if [[ "${scan_this,,}" =~ ^(y|yes|)$ ]]; then
                         scan_container "$id" "$name" "$image"
                     else
