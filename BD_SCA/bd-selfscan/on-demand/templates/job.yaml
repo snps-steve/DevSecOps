@@ -1,0 +1,184 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "selfscan.name" . }}
+  namespace: {{ .Values.target.namespace | quote }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 900
+  template:
+    spec:
+      serviceAccountName: {{ include "selfscan.sa" . }}
+      restartPolicy: Never
+      {{- if .Values.registry.secretName }}
+      volumes:
+      - name: regcred
+        secret:
+          secretName: {{ .Values.registry.secretName | quote }}
+          items:
+          - key: .dockerconfigjson
+            path: config.json
+      {{- end }}
+      containers:
+      - name: run
+        image: {{ .Values.runner.image | quote }}
+        env:
+        - name: BD_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.blackduck.tokenSecretName | quote }}
+              key: url
+        - name: BD_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.blackduck.tokenSecretName | quote }}
+              key: token
+        - name: TARGET_NS
+          value: {{ .Values.target.namespace | quote }}
+        - name: LABEL_SELECTOR
+          value: {{ .Values.target.labelSelector | quote }}
+        - name: ANNOTATE
+          value: {{ ternary "true" "false" .Values.target.annotateWorkloads | quote }}
+        - name: ANNO_KEY
+          value: {{ .Values.target.annotateKey | quote }}
+        - name: ANNO_VALUE
+          value: {{ .Values.target.annotateValueOnPass | quote }}
+        - name: PROJECT_PREFIX
+          value: {{ .Values.detect.projectPrefix | quote }}
+        - name: POLICY_FAIL_SEVS
+          value: {{ .Values.detect.policyFailSeverities | quote }}
+        - name: TRUST_CERT
+          value: {{ ternary "true" "false" .Values.blackduck.trustCert | quote }}
+        {{- if .Values.registry.secretName }}
+        volumeMounts:
+        - name: regcred
+          mountPath: /root/.docker
+          readOnly: true
+        {{- end }}
+        command: ["/bin/sh","-c"]
+        args:
+        - |
+          set -euo pipefail
+
+          echo "[selfscan] installing tools..."
+          apk add --no-cache bash curl jq skopeo openjdk17-jre
+          KV=$(curl -sSL https://dl.k8s.io/release/stable.txt)
+          curl -fsSL -o /usr/local/bin/kubectl https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl
+          chmod +x /usr/local/bin/kubectl
+
+          echo "[selfscan] waiting for BD URL to respond: ${BD_URL}"
+          for i in $(seq 1 60); do
+            if curl -sk --max-time 5 "${BD_URL}" >/dev/null 2>&1; then
+              echo "[selfscan] BD is reachable"
+              break
+            fi
+            echo "[selfscan] BD not reachable yet, retrying..."
+            sleep 10
+          done
+
+          echo "[selfscan] discovering images in namespace=${TARGET_NS}, selector='${LABEL_SELECTOR}'"
+          PODS_JSON=$(kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" -o json)
+          IMAGES=$(echo "${PODS_JSON}" | jq -r '
+            [
+              (.items[].spec.containers[]?.image),
+              (.items[].spec.initContainers[]?.image)
+            ] | map(select(. != null)) | unique[]')
+
+          if [ -z "${IMAGES}" ]; then
+            echo "[selfscan] no images found by selector; exiting 0"
+            exit 0
+          fi
+
+          echo "[selfscan] found images:"
+          echo "${IMAGES}" | sed 's/^/  - /'
+
+          # Download Detect launcher once
+          DETECT="/tmp/detect.sh"
+          echo "[selfscan] fetching Detect launcher..."
+          curl -fsSL https://detect.blackduck.com/detect10.sh -o "${DETECT}"
+          chmod +x "${DETECT}"
+
+          # Derive project name from selector if possible
+          REL_FROM_SEL=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app\.kubernetes\.io\/instance=\(.*\)/\1/p')
+          PROJECT="${PROJECT_PREFIX}-${REL_FROM_SEL:-bd}"
+
+          FAIL=0
+          echo "${IMAGES}" | while read -r IMAGE; do
+            [ -z "${IMAGE}" ] && continue
+            echo "-----------------------------------------------"
+            echo "[selfscan] Inspecting ${IMAGE}"
+
+            # Resolve digest (stable version naming)
+            DIGEST=$(skopeo inspect docker://"${IMAGE}" 2>/dev/null | jq -r '.Digest')
+            if [ -z "${DIGEST}" ] || [ "${DIGEST}" = "null" ]; then
+              echo "[selfscan][FAIL] could not inspect ${IMAGE}"
+              FAIL=1
+              continue
+            fi
+            SHORT=${DIGEST#sha256:}
+            SHORT=$(printf '%s' "${SHORT}" | cut -c1-12)
+            TAR="/tmp/${SHORT}.tar"
+
+            echo "[selfscan] copy image → tar"
+            if ! skopeo copy docker://"${IMAGE}" docker-archive:"${TAR}:${IMAGE}"; then
+              echo "[selfscan][FAIL] skopeo copy failed for ${IMAGE}"
+              FAIL=1
+              continue
+            fi
+
+            # ---- POSIX sh-compatible argument list (no arrays) ----
+            set -- \
+              --blackduck.url="${BD_URL}" \
+              --blackduck.api.token="${BD_TOKEN}" \
+              --detect.tools=DOCKER \
+              --detect.docker.tar="${TAR}" \
+              --detect.project.name="${PROJECT}" \
+              --detect.project.version.name="img-${SHORT}"
+
+            # optional flags
+            [ "${TRUST_CERT}" = "true" ] && set -- "$@" --blackduck.trust.cert=true
+            [ -n "${POLICY_FAIL_SEVS}" ] && set -- "$@" --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVS}"
+
+            echo "[selfscan] run Detect for ${IMAGE} (version img-${SHORT})"
+            set +e
+            "${DETECT}" "$@"
+            RC=$?
+            set -e
+
+            if [ $RC -ne 0 ]; then
+              echo "[selfscan][FAIL] Detect exited ${RC} for ${IMAGE}"
+              FAIL=1
+              continue
+            fi
+
+            echo "[selfscan][PASS] ${IMAGE}"
+
+            if [ "${ANNOTATE}" = "true" ]; then
+              echo "[selfscan] annotating workloads that reference ${IMAGE}"
+              for KIND in deployments statefulsets daemonsets; do
+                kubectl -n "${TARGET_NS}" get ${KIND} -l "${LABEL_SELECTOR}" -o json \
+                | jq -r --arg IMG "${IMAGE}" '.items[]
+                    | select( ([.spec.template.spec.containers[].image?] + [.spec.template.spec.initContainers[].image?] | map(select(. == $IMG)) | length) > 0 )
+                    | .metadata.name' \
+                | while read -r NAME; do
+                    [ -z "${NAME}" ] && continue
+                    kubectl -n "${TARGET_NS}" annotate ${KIND%s}/${NAME} \
+                      "${ANNO_KEY}=${ANNO_VALUE}" \
+                      "blackduck.synopsys.com/version=img-${SHORT}" \
+                      "blackduck.synopsys.com/digest=${DIGEST}" \
+                      --overwrite || true
+                  done
+              done
+            fi
+          done
+
+          if [ $FAIL -ne 0 ]; then
+            echo "[selfscan] one or more images failed policy/copy/scan; marking Job failed"
+            exit 1
+          fi
+
+          echo "[selfscan] all images scanned successfully"
