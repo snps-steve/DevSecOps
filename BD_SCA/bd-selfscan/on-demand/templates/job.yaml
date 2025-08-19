@@ -1,3 +1,11 @@
+{{- /* ---------- Safe, global locals ---------- */ -}}
+{{- $ns := .Values.target.namespace -}}
+{{- $defaultInspector := printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" $ns -}}
+{{- $inspector := $defaultInspector -}}
+{{- if and .Values.dockerInspector .Values.dockerInspector.serviceUrl }}
+  {{- $inspector = .Values.dockerInspector.serviceUrl -}}
+{{- end -}}
+
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -56,16 +64,12 @@ spec:
           value: {{ .Values.detect.parentProject | default "" | quote }}
         - name: DETECT_PARENT_VERSION
           value: {{ .Values.detect.parentVersion | default "" | quote }}
-        # Leave PROJECT_GROUP present but unused (empty by default)
+        # Present but unused unless non-empty (customer can enable later)
         - name: PROJECT_GROUP
           value: {{ .Values.detect.projectGroupName | default "" | quote }}
-        # Image Inspector service URL (container mode). Defaults to ubuntu service in target namespace.
+        # Image Inspector service URL (container mode)
         - name: INSPECTOR_URL
-          value: {{- if .Values.dockerInspector -}}
-                   {{ .Values.dockerInspector.serviceUrl | default (printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" $.Values.target.namespace) | quote }}
-                 {{- else -}}
-                   {{ printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" $.Values.target.namespace | quote }}
-                 {{- end }}
+          value: {{ $inspector | quote }}
         {{- if .Values.registry.secretName }}
         volumeMounts:
         - name: regcred
@@ -110,8 +114,8 @@ spec:
           echo "${IMAGES}" | sed 's/^/  - /'
 
           # Parent project/version:
-          # - name: env override DETECT_PARENT_PROJECT, else from selector app=<name>, else "selfscan"
-          # - version: env override DETECT_PARENT_VERSION, else pod label 'version' on first pod, else "current"
+          # name: env override DETECT_PARENT_PROJECT, else from selector app=<name>, else "selfscan"
+          # version: env override DETECT_PARENT_VERSION, else pod label 'version' on first pod, else "current"
           if [ -n "${DETECT_PARENT_PROJECT}" ]; then
             PARENT_PROJECT="${DETECT_PARENT_PROJECT}"
           else
@@ -216,7 +220,7 @@ EOF
             for KIND in deployments statefulsets daemonsets; do
               kubectl -n "${TARGET_NS}" get ${KIND} -l "${LABEL_SELECTOR}" -o name | while read -r RES; do
                 kubectl -n "${TARGET_NS}" annotate "${RES}" \
-                  "{{ .Values.target.annotateKey | default "blackduck.synopsys.com/policy" }}={{ .Values.target.annotateValueOnPass | default "pass" }}" \
+                  "${ANNO_KEY}=${ANNO_VALUE}" \
                   "blackduck.synopsys.com/parent=${PARENT_PROJECT}" \
                   "blackduck.synopsys.com/parent-version=${PARENT_VERSION}" \
                   --overwrite || true
