@@ -1,0 +1,23 @@
+target:
+  namespace: "bd"                                         # <-- BD namespace
+  labelSelector: "app.kubernetes.io/instance=blackduck"   # <-- BD release selector
+  annotateWorkloads: false                                # set true to annotate BD Deployments/STS/DS
+  annotateKey: "blackduck.synopsys.com/policy"
+  annotateValueOnPass: "pass"
+
+blackduck:
+  url: ""                              # leave blank; we pull from Secret at runtime
+  tokenSecretName: "blackduck-creds"   # Secret will live in the target namespace
+  # If your BD uses a self-signed cert, set this:
+  trustCert: true
+
+detect:
+  policyFailSeverities: "CRITICAL,BLOCKER"  # be careful with ALL on vendor images
+  projectPrefix: "bd-selfscan"              # projects will be bd-selfscan-<release>
+
+registry:
+  # If BD images come from a private/entitled registry, provide a docker-registry secret here
+  secretName: ""
+
+runner:
+  image: "alpine:3.19"     # you can replace with a pre-baked utility image (faster)
