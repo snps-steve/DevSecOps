@@ -25,17 +25,17 @@ spec:
       {{- end }}
       containers:
       - name: run
-        image: {{ .Values.runner.image | quote }}
+        image: {{ .Values.runner.image | default "alpine:3.19" | quote }}
         env:
         - name: BD_URL
           valueFrom:
             secretKeyRef:
-              name: {{ .Values.blackduck.tokenSecretName | quote }}
+              name: {{ .Values.blackduck.tokenSecretName | default "blackduck-creds" | quote }}
               key: url
         - name: BD_TOKEN
           valueFrom:
             secretKeyRef:
-              name: {{ .Values.blackduck.tokenSecretName | quote }}
+              name: {{ .Values.blackduck.tokenSecretName | default "blackduck-creds" | quote }}
               key: token
         - name: TARGET_NS
           value: {{ .Values.target.namespace | quote }}
@@ -44,15 +44,24 @@ spec:
         - name: ANNOTATE
           value: {{ ternary "true" "false" .Values.target.annotateWorkloads | quote }}
         - name: ANNO_KEY
-          value: {{ .Values.target.annotateKey | quote }}
+          value: {{ .Values.target.annotateKey | default "blackduck.synopsys.com/policy" | quote }}
         - name: ANNO_VALUE
-          value: {{ .Values.target.annotateValueOnPass | quote }}
-        - name: PROJECT_PREFIX
-          value: {{ .Values.detect.projectPrefix | quote }}
+          value: {{ .Values.target.annotateValueOnPass | default "pass" | quote }}
         - name: POLICY_FAIL_SEVS
-          value: {{ .Values.detect.policyFailSeverities | quote }}
+          value: {{ .Values.detect.policyFailSeverities | default "CRITICAL,BLOCKER" | quote }}
         - name: TRUST_CERT
-          value: {{ ternary "true" "false" .Values.blackduck.trustCert | quote }}
+          value: {{ ternary "true" "false" (.Values.blackduck.trustCert | default true) | quote }}
+        # parent project/version overrides (optional; leave empty to auto-derive)
+        - name: DETECT_PARENT_PROJECT
+          value: {{ .Values.detect.parentProject | default "" | quote }}
+        - name: DETECT_PARENT_VERSION
+          value: {{ .Values.detect.parentVersion | default "" | quote }}
+        # leave PROJECT_GROUP present but unused (empty by default)
+        - name: PROJECT_GROUP
+          value: {{ .Values.detect.projectGroupName | default "" | quote }}
+        # Image Inspector service URL (container mode). Default to ubuntu service in the same ns.
+        - name: INSPECTOR_URL
+          value: {{ .Values.dockerInspector.serviceUrl | default (printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" .Values.target.namespace) | quote }}
         {{- if .Values.registry.secretName }}
         volumeMounts:
         - name: regcred
@@ -65,7 +74,7 @@ spec:
           set -euo pipefail
 
           echo "[selfscan] installing tools..."
-          apk add --no-cache bash curl jq skopeo openjdk17-jre
+          apk add --no-cache curl jq skopeo openjdk17-jre >/dev/null
           KV=$(curl -sSL https://dl.k8s.io/release/stable.txt)
           curl -fsSL -o /usr/local/bin/kubectl https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl
           chmod +x /usr/local/bin/kubectl
@@ -77,7 +86,7 @@ spec:
               break
             fi
             echo "[selfscan] BD not reachable yet, retrying..."
-            sleep 10
+            sleep 5
           done
 
           echo "[selfscan] discovering images in namespace=${TARGET_NS}, selector='${LABEL_SELECTOR}'"
@@ -96,56 +105,91 @@ spec:
           echo "[selfscan] found images:"
           echo "${IMAGES}" | sed 's/^/  - /'
 
-          # Download Detect launcher once
+          # Parent project/version:
+          # - name: from env override DETECT_PARENT_PROJECT, else from label selector app=<name>, else "selfscan"
+          # - version: from env override DETECT_PARENT_VERSION, else pod label 'version' on first pod, else "current"
+          if [ -n "${DETECT_PARENT_PROJECT}" ]; then
+            PARENT_PROJECT="${DETECT_PARENT_PROJECT}"
+          else
+            PARENT_PROJECT=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app=\([^,]*\).*/\1/p')
+            [ -z "${PARENT_PROJECT}" ] && PARENT_PROJECT="selfscan"
+          fi
+
+          if [ -n "${DETECT_PARENT_VERSION}" ]; then
+            PARENT_VERSION="${DETECT_PARENT_VERSION}"
+          else
+            PARENT_VERSION=$(echo "${PODS_JSON}" | jq -r '.items[0].metadata.labels.version // empty')
+            [ -z "${PARENT_VERSION}" ] && PARENT_VERSION="current"
+          fi
+
+          echo "[selfscan] parent: ${PARENT_PROJECT}  version: ${PARENT_VERSION}"
+
+          # Base Detect configuration file (shared)
+          cat >/tmp/base.props <<EOF
+blackduck.url=${BD_URL}
+blackduck.api.token=${BD_TOKEN}
+blackduck.trust.cert=${TRUST_CERT}
+detect.wait.for.results=true
+detect.tools=DOCKER
+# Use in-cluster Image Inspector service (container mode)
+detect.docker.passthrough.imageinspector.service.url=${INSPECTOR_URL}
+detect.docker.passthrough.imageinspector.service.start=false
+EOF
+
+          # Leave project group feature present but unused (only applied if non-empty)
+          if [ -n "${PROJECT_GROUP}" ]; then
+            echo "detect.project.group.name=${PROJECT_GROUP}" >> /tmp/base.props
+          fi
+
+          # Fetch Detect launcher once
           DETECT="/tmp/detect.sh"
           echo "[selfscan] fetching Detect launcher..."
           curl -fsSL https://detect.blackduck.com/detect10.sh -o "${DETECT}"
           chmod +x "${DETECT}"
 
-          # Derive project name from selector if possible
-          REL_FROM_SEL=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app\.kubernetes\.io\/instance=\(.*\)/\1/p')
-          PROJECT="${PROJECT_PREFIX}-${REL_FROM_SEL:-bd}"
-
           FAIL=0
+
           echo "${IMAGES}" | while read -r IMAGE; do
             [ -z "${IMAGE}" ] && continue
             echo "-----------------------------------------------"
             echo "[selfscan] Inspecting ${IMAGE}"
 
-            # Resolve digest (stable version naming)
-            DIGEST=$(skopeo inspect docker://"${IMAGE}" 2>/dev/null | jq -r '.Digest')
-            if [ -z "${DIGEST}" ] || [ "${DIGEST}" = "null" ]; then
-              echo "[selfscan][FAIL] could not inspect ${IMAGE}"
-              FAIL=1
-              continue
+            # microservice project name = repo basename (strip tag/digest first)
+            REPO=$(printf "%s" "${IMAGE}" | cut -d@ -f1 | cut -d: -f1)
+            MICROSVC=$(basename "${REPO}")
+
+            # version name = image tag if present; else short digest fallback
+            TAG=$(printf "%s" "${IMAGE}" | awk -F: 'NF>1{print $NF}')
+            if [ -n "${TAG}" ] && [ "${TAG}" != "${IMAGE}" ]; then
+              VERSION_NAME="${TAG}"
+            else
+              DIGEST=$(skopeo inspect docker://"${IMAGE}" 2>/dev/null | jq -r '.Digest')
+              if [ -z "${DIGEST}" ] || [ "${DIGEST}" = "null" ]; then
+                # last-resort: hash manifest (raw) to create a stable pseudo-id
+                DIGEST=$(skopeo inspect --raw "docker://${IMAGE}" 2>/dev/null | sha256sum | awk '{print $1}')
+                [ -z "${DIGEST}" ] && DIGEST="unknown"
+                SHORT=$(printf '%s' "${DIGEST}" | cut -c1-12)
+              else
+                SHORT=$(printf '%s' "${DIGEST#sha256:}" | cut -c1-12)
+              fi
+              VERSION_NAME="img-${SHORT}"
             fi
-            SHORT=${DIGEST#sha256:}
-            SHORT=$(printf '%s' "${SHORT}" | cut -c1-12)
-            TAR="/tmp/${SHORT}.tar"
 
-            echo "[selfscan] copy image → tar"
-            if ! skopeo copy docker://"${IMAGE}" docker-archive:"${TAR}:${IMAGE}"; then
-              echo "[selfscan][FAIL] skopeo copy failed for ${IMAGE}"
-              FAIL=1
-              continue
-            fi
+            # Per-image Detect config (parent → child)
+            cat >/tmp/run.props <<EOF
+detect.project.parent.name=${PARENT_PROJECT}
+detect.project.parent.version.name=${PARENT_VERSION}
+detect.project.name=${MICROSVC}
+detect.project.version.name=${VERSION_NAME}
+detect.docker.image=${IMAGE}
+detect.policy.check.fail.on.severities=${POLICY_FAIL_SEVS}
+EOF
 
-            # ---- POSIX sh-compatible argument list (no arrays) ----
-            set -- \
-              --blackduck.url="${BD_URL}" \
-              --blackduck.api.token="${BD_TOKEN}" \
-              --detect.tools=DOCKER \
-              --detect.docker.tar="${TAR}" \
-              --detect.project.name="${PROJECT}" \
-              --detect.project.version.name="img-${SHORT}"
+            cat /tmp/base.props /tmp/run.props > /tmp/detect.props
 
-            # optional flags
-            [ "${TRUST_CERT}" = "true" ] && set -- "$@" --blackduck.trust.cert=true
-            [ -n "${POLICY_FAIL_SEVS}" ] && set -- "$@" --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVS}"
-
-            echo "[selfscan] run Detect for ${IMAGE} (version img-${SHORT})"
+            echo "[selfscan] run Detect for ${MICROSVC}:${VERSION_NAME}"
             set +e
-            "${DETECT}" "$@"
+            "${DETECT}" --detect.configuration.file=/tmp/detect.props
             RC=$?
             set -e
 
@@ -156,29 +200,25 @@ spec:
             fi
 
             echo "[selfscan][PASS] ${IMAGE}"
-
-            if [ "${ANNOTATE}" = "true" ]; then
-              echo "[selfscan] annotating workloads that reference ${IMAGE}"
-              for KIND in deployments statefulsets daemonsets; do
-                kubectl -n "${TARGET_NS}" get ${KIND} -l "${LABEL_SELECTOR}" -o json \
-                | jq -r --arg IMG "${IMAGE}" '.items[]
-                    | select( ([.spec.template.spec.containers[].image?] + [.spec.template.spec.initContainers[].image?] | map(select(. == $IMG)) | length) > 0 )
-                    | .metadata.name' \
-                | while read -r NAME; do
-                    [ -z "${NAME}" ] && continue
-                    kubectl -n "${TARGET_NS}" annotate ${KIND%s}/${NAME} \
-                      "${ANNO_KEY}=${ANNO_VALUE}" \
-                      "blackduck.synopsys.com/version=img-${SHORT}" \
-                      "blackduck.synopsys.com/digest=${DIGEST}" \
-                      --overwrite || true
-                  done
-              done
-            fi
           done
 
           if [ $FAIL -ne 0 ]; then
-            echo "[selfscan] one or more images failed policy/copy/scan; marking Job failed"
+            echo "[selfscan] one or more images failed; marking Job failed"
             exit 1
+          fi
+
+          # Optional: annotate workloads only on overall success
+          if [ "${ANNOTATE}" = "true" ]; then
+            echo "[selfscan] annotating workloads as pass"
+            for KIND in deployments statefulsets daemonsets; do
+              kubectl -n "${TARGET_NS}" get ${KIND} -l "${LABEL_SELECTOR}" -o name | while read -r RES; do
+                kubectl -n "${TARGET_NS}" annotate "${RES}" \
+                  "${ANNO_KEY}=${ANNO_VALUE}" \
+                  "blackduck.synopsys.com/parent=${PARENT_PROJECT}" \
+                  "blackduck.synopsys.com/parent-version=${PARENT_VERSION}" \
+                  --overwrite || true
+              done
+            done
           fi
 
           echo "[selfscan] all images scanned successfully"
