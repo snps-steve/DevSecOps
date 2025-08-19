@@ -1,0 +1,107 @@
+# file: bd-imageinspector-services.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bd
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bd-imageinspector-alpine
+  namespace: bd
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: bd-imageinspector, os: alpine } }
+  template:
+    metadata: { labels: { app: bd-imageinspector, os: alpine } }
+    spec:
+      containers:
+        - name: alpine
+          image: blackducksoftware/blackduck-imageinspector-alpine:6.2.1
+          args:
+            - "--server.port=8081"
+            - "--current.linux.distro=ALPINE"
+            - "--inspector.url.alpine=http://bd-imageinspector-alpine.bd.svc.cluster.local:9000"
+            - "--inspector.url.centos=http://bd-imageinspector-centos.bd.svc.cluster.local:9001"
+            - "--inspector.url.ubuntu=http://bd-imageinspector-ubuntu.bd.svc.cluster.local:9002"
+          ports: [{ containerPort: 8081, name: http }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bd-imageinspector-alpine
+  namespace: bd
+spec:
+  selector: { app: bd-imageinspector, os: alpine }
+  ports:
+    - name: http
+      port: 9000
+      targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bd-imageinspector-centos
+  namespace: bd
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: bd-imageinspector, os: centos } }
+  template:
+    metadata: { labels: { app: bd-imageinspector, os: centos } }
+    spec:
+      containers:
+        - name: centos
+          image: blackducksoftware/blackduck-imageinspector-centos:6.2.1
+          args:
+            - "--server.port=8081"
+            - "--current.linux.distro=CENTOS"
+            - "--inspector.url.alpine=http://bd-imageinspector-alpine.bd.svc.cluster.local:9000"
+            - "--inspector.url.centos=http://bd-imageinspector-centos.bd.svc.cluster.local:9001"
+            - "--inspector.url.ubuntu=http://bd-imageinspector-ubuntu.bd.svc.cluster.local:9002"
+          ports: [{ containerPort: 8081, name: http }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bd-imageinspector-centos
+  namespace: bd
+spec:
+  selector: { app: bd-imageinspector, os: centos }
+  ports:
+    - name: http
+      port: 9001
+      targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bd-imageinspector-ubuntu
+  namespace: bd
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: bd-imageinspector, os: ubuntu } }
+  template:
+    metadata: { labels: { app: bd-imageinspector, os: ubuntu } }
+    spec:
+      containers:
+        - name: ubuntu
+          image: blackducksoftware/blackduck-imageinspector-ubuntu:6.2.1
+          args:
+            - "--server.port=8081"
+            - "--current.linux.distro=UBUNTU"
+            - "--inspector.url.alpine=http://bd-imageinspector-alpine.bd.svc.cluster.local:9000"
+            - "--inspector.url.centos=http://bd-imageinspector-centos.bd.svc.cluster.local:9001"
+            - "--inspector.url.ubuntu=http://bd-imageinspector-ubuntu.bd.svc.cluster.local:9002"
+          ports: [{ containerPort: 8081, name: http }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bd-imageinspector-ubuntu
+  namespace: bd
+spec:
+  selector: { app: bd-imageinspector, os: ubuntu }
+  ports:
+    - name: http
+      port: 9002
+      targetPort: 8081
