@@ -51,17 +51,21 @@ spec:
           value: {{ .Values.detect.policyFailSeverities | default "CRITICAL,BLOCKER" | quote }}
         - name: TRUST_CERT
           value: {{ ternary "true" "false" (.Values.blackduck.trustCert | default true) | quote }}
-        # parent project/version overrides (optional; leave empty to auto-derive)
+        # Optional explicit parent project/version (leave empty to auto-derive)
         - name: DETECT_PARENT_PROJECT
           value: {{ .Values.detect.parentProject | default "" | quote }}
         - name: DETECT_PARENT_VERSION
           value: {{ .Values.detect.parentVersion | default "" | quote }}
-        # leave PROJECT_GROUP present but unused (empty by default)
+        # Leave PROJECT_GROUP present but unused (empty by default)
         - name: PROJECT_GROUP
           value: {{ .Values.detect.projectGroupName | default "" | quote }}
-        # Image Inspector service URL (container mode). Default to ubuntu service in the same ns.
+        # Image Inspector service URL (container mode). Defaults to ubuntu service in target namespace.
         - name: INSPECTOR_URL
-          value: {{ .Values.dockerInspector.serviceUrl | default (printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" .Values.target.namespace) | quote }}
+          value: {{- if .Values.dockerInspector -}}
+                   {{ .Values.dockerInspector.serviceUrl | default (printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" $.Values.target.namespace) | quote }}
+                 {{- else -}}
+                   {{ printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" $.Values.target.namespace | quote }}
+                 {{- end }}
         {{- if .Values.registry.secretName }}
         volumeMounts:
         - name: regcred
@@ -106,8 +110,8 @@ spec:
           echo "${IMAGES}" | sed 's/^/  - /'
 
           # Parent project/version:
-          # - name: from env override DETECT_PARENT_PROJECT, else from label selector app=<name>, else "selfscan"
-          # - version: from env override DETECT_PARENT_VERSION, else pod label 'version' on first pod, else "current"
+          # - name: env override DETECT_PARENT_PROJECT, else from selector app=<name>, else "selfscan"
+          # - version: env override DETECT_PARENT_VERSION, else pod label 'version' on first pod, else "current"
           if [ -n "${DETECT_PARENT_PROJECT}" ]; then
             PARENT_PROJECT="${DETECT_PARENT_PROJECT}"
           else
@@ -124,7 +128,7 @@ spec:
 
           echo "[selfscan] parent: ${PARENT_PROJECT}  version: ${PARENT_VERSION}"
 
-          # Base Detect configuration file (shared)
+          # Base Detect configuration (shared)
           cat >/tmp/base.props <<EOF
 blackduck.url=${BD_URL}
 blackduck.api.token=${BD_TOKEN}
@@ -136,7 +140,7 @@ detect.docker.passthrough.imageinspector.service.url=${INSPECTOR_URL}
 detect.docker.passthrough.imageinspector.service.start=false
 EOF
 
-          # Leave project group feature present but unused (only applied if non-empty)
+          # Project group present but only applied if non-empty
           if [ -n "${PROJECT_GROUP}" ]; then
             echo "detect.project.group.name=${PROJECT_GROUP}" >> /tmp/base.props
           fi
@@ -165,7 +169,6 @@ EOF
             else
               DIGEST=$(skopeo inspect docker://"${IMAGE}" 2>/dev/null | jq -r '.Digest')
               if [ -z "${DIGEST}" ] || [ "${DIGEST}" = "null" ]; then
-                # last-resort: hash manifest (raw) to create a stable pseudo-id
                 DIGEST=$(skopeo inspect --raw "docker://${IMAGE}" 2>/dev/null | sha256sum | awk '{print $1}')
                 [ -z "${DIGEST}" ] && DIGEST="unknown"
                 SHORT=$(printf '%s' "${DIGEST}" | cut -c1-12)
@@ -213,7 +216,7 @@ EOF
             for KIND in deployments statefulsets daemonsets; do
               kubectl -n "${TARGET_NS}" get ${KIND} -l "${LABEL_SELECTOR}" -o name | while read -r RES; do
                 kubectl -n "${TARGET_NS}" annotate "${RES}" \
-                  "${ANNO_KEY}=${ANNO_VALUE}" \
+                  "{{ .Values.target.annotateKey | default "blackduck.synopsys.com/policy" }}={{ .Values.target.annotateValueOnPass | default "pass" }}" \
                   "blackduck.synopsys.com/parent=${PARENT_PROJECT}" \
                   "blackduck.synopsys.com/parent-version=${PARENT_VERSION}" \
                   --overwrite || true
