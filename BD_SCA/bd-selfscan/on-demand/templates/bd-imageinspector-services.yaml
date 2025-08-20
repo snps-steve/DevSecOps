@@ -1,107 +1,65 @@
-# file: bd-imageinspector-services.yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: bd
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: bd-imageinspector-alpine
-  namespace: bd
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: bd-imageinspector, os: alpine } }
-  template:
-    metadata: { labels: { app: bd-imageinspector, os: alpine } }
-    spec:
-      containers:
-        - name: alpine
-          image: blackducksoftware/blackduck-imageinspector-alpine:6.2.1
-          args:
-            - "--server.port=8081"
-            - "--current.linux.distro=ALPINE"
-            - "--inspector.url.alpine=http://bd-imageinspector-alpine.bd.svc.cluster.local:9000"
-            - "--inspector.url.centos=http://bd-imageinspector-centos.bd.svc.cluster.local:9001"
-            - "--inspector.url.ubuntu=http://bd-imageinspector-ubuntu.bd.svc.cluster.local:9002"
-          ports: [{ containerPort: 8081, name: http }]
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: bd-imageinspector-alpine
-  namespace: bd
-spec:
-  selector: { app: bd-imageinspector, os: alpine }
-  ports:
-    - name: http
-      port: 9000
-      targetPort: 8081
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: bd-imageinspector-centos
-  namespace: bd
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: bd-imageinspector, os: centos } }
-  template:
-    metadata: { labels: { app: bd-imageinspector, os: centos } }
-    spec:
-      containers:
-        - name: centos
-          image: blackducksoftware/blackduck-imageinspector-centos:6.2.1
-          args:
-            - "--server.port=8081"
-            - "--current.linux.distro=CENTOS"
-            - "--inspector.url.alpine=http://bd-imageinspector-alpine.bd.svc.cluster.local:9000"
-            - "--inspector.url.centos=http://bd-imageinspector-centos.bd.svc.cluster.local:9001"
-            - "--inspector.url.ubuntu=http://bd-imageinspector-ubuntu.bd.svc.cluster.local:9002"
-          ports: [{ containerPort: 8081, name: http }]
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: bd-imageinspector-centos
-  namespace: bd
-spec:
-  selector: { app: bd-imageinspector, os: centos }
-  ports:
-    - name: http
-      port: 9001
-      targetPort: 8081
----
+{{- /* Bool-safe guard: do NOT render when dockerInspector.install=false */ -}}
+{{- $install := true -}}
+{{- if .Values.dockerInspector -}}
+{{-   if hasKey .Values.dockerInspector "install" -}}
+{{-     $install = .Values.dockerInspector.install -}}
+{{-   end -}}
+{{- end -}}
+{{- if $install }}
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bd-imageinspector-ubuntu
-  namespace: bd
+  namespace: {{ .Values.target.namespace | default .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: bd-imageinspector-ubuntu
+    app.kubernetes.io/instance: {{ .Release.Name }}
 spec:
-  replicas: 1
-  selector: { matchLabels: { app: bd-imageinspector, os: ubuntu } }
+  replicas: {{ default 1 .Values.dockerInspector.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bd-imageinspector-ubuntu
+      app.kubernetes.io/instance: {{ .Release.Name }}
   template:
-    metadata: { labels: { app: bd-imageinspector, os: ubuntu } }
+    metadata:
+      labels:
+        app.kubernetes.io/name: bd-imageinspector-ubuntu
+        app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
+      serviceAccountName: {{ include "selfscan.sa" . }}
       containers:
         - name: ubuntu
-          image: blackducksoftware/blackduck-imageinspector-ubuntu:6.2.1
-          args:
-            - "--server.port=8081"
-            - "--current.linux.distro=UBUNTU"
-            - "--inspector.url.alpine=http://bd-imageinspector-alpine.bd.svc.cluster.local:9000"
-            - "--inspector.url.centos=http://bd-imageinspector-centos.bd.svc.cluster.local:9001"
-            - "--inspector.url.ubuntu=http://bd-imageinspector-ubuntu.bd.svc.cluster.local:9002"
-          ports: [{ containerPort: 8081, name: http }]
+          image: {{ default "blackducksoftware/blackduck-imageinspector-ubuntu:6.2.1" .Values.dockerInspector.image | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HTTP_PORT
+              value: "9002"
+            - name: INSPECTOR_PLATFORM
+              value: "UBUNTU"
+          ports:
+            - containerPort: 9002
+              name: http
+      restartPolicy: Always
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: bd-imageinspector-ubuntu
-  namespace: bd
+  namespace: {{ .Values.target.namespace | default .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: bd-imageinspector-ubuntu
+    app.kubernetes.io/instance: {{ .Release.Name }}
 spec:
-  selector: { app: bd-imageinspector, os: ubuntu }
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: bd-imageinspector-ubuntu
+    app.kubernetes.io/instance: {{ .Release.Name }}
   ports:
     - name: http
       port: 9002
-      targetPort: 8081
+      targetPort: 9002
+      protocol: TCP
+
+{{- end }}
