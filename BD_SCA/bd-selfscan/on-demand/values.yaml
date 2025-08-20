@@ -11,6 +11,12 @@ blackduck:
   # If your BD uses a self-signed cert, set this:
   trustCert: true
 
+dockerInspector:
+  install: false                        # you’re using an existing service
+  serviceUrl: "http://bd-imageinspector-ubuntu.bd.svc.cluster.local:9002"
+  sharedPvcName: "bd-imageinspector-shared"
+  createSharedPvc: true                 # set to false if the PVC already exists
+
 detect:
   policyFailSeverities: "CRITICAL,BLOCKER"  # be careful with ALL on vendor images
   projectPrefix: "bd-selfscan"              # projects will be bd-selfscan-<release>
