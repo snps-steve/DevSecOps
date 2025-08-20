@@ -1,16 +1,20 @@
-{{- /* ---------- Safe, global locals ---------- */ -}}
-{{- $ns := .Values.target.namespace -}}
-{{- $defaultInspector := printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" $ns -}}
-{{- $inspector := $defaultInspector -}}
-{{- if and .Values.dockerInspector .Values.dockerInspector.serviceUrl }}
-  {{- $inspector = .Values.dockerInspector.serviceUrl -}}
-{{- end -}}
+{{- $ns := default .Release.Namespace .Values.target.namespace -}}
+{{- $selector := default "app=blackduck" .Values.target.labelSelector -}}
+{{- $inspectorURL := default (printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" $ns) .Values.dockerInspector.serviceUrl -}}
+{{- $sharedPVC := default "bd-imageinspector-shared" .Values.dockerInspector.sharedPvcName -}}
+{{- $annoKey := default "blackduck.synopsys.com/policy" .Values.target.annotateKey -}}
+{{- $annoVal := default "pass" .Values.target.annotateValueOnPass -}}
+
+{{- $annotate := false -}}
+{{- if hasKey .Values "target" }}{{- if hasKey .Values.target "annotateWorkloads" }}{{- $annotate = .Values.target.annotateWorkloads }}{{- end }}{{- end -}}
+{{- $trust := true -}}
+{{- if hasKey .Values "blackduck" }}{{- if hasKey .Values.blackduck "trustCert" }}{{- $trust = .Values.blackduck.trustCert }}{{- end }}{{- end -}}
 
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ include "selfscan.name" . }}
-  namespace: {{ .Values.target.namespace | quote }}
+  namespace: {{ $ns }}
   annotations:
     "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-weight": "10"
@@ -22,210 +26,61 @@ spec:
     spec:
       serviceAccountName: {{ include "selfscan.sa" . }}
       restartPolicy: Never
-      {{- if .Values.registry.secretName }}
       volumes:
-      - name: regcred
-        secret:
-          secretName: {{ .Values.registry.secretName | quote }}
-          items:
-          - key: .dockerconfigjson
-            path: config.json
-      {{- end }}
+        - name: shared
+          persistentVolumeClaim:
+            claimName: {{ $sharedPVC | quote }}
+        - name: script
+          configMap:
+            name: {{ include "selfscan.name" . }}-script
+            defaultMode: 0555
       containers:
-      - name: run
-        image: {{ .Values.runner.image | default "alpine:3.19" | quote }}
-        env:
-        - name: BD_URL
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.blackduck.tokenSecretName | default "blackduck-creds" | quote }}
-              key: url
-        - name: BD_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.blackduck.tokenSecretName | default "blackduck-creds" | quote }}
-              key: token
-        - name: TARGET_NS
-          value: {{ .Values.target.namespace | quote }}
-        - name: LABEL_SELECTOR
-          value: {{ .Values.target.labelSelector | quote }}
-        - name: ANNOTATE
-          value: {{ ternary "true" "false" .Values.target.annotateWorkloads | quote }}
-        - name: ANNO_KEY
-          value: {{ .Values.target.annotateKey | default "blackduck.synopsys.com/policy" | quote }}
-        - name: ANNO_VALUE
-          value: {{ .Values.target.annotateValueOnPass | default "pass" | quote }}
-        - name: POLICY_FAIL_SEVS
-          value: {{ .Values.detect.policyFailSeverities | default "CRITICAL,BLOCKER" | quote }}
-        - name: TRUST_CERT
-          value: {{ ternary "true" "false" (.Values.blackduck.trustCert | default true) | quote }}
-        # Optional explicit parent project/version (leave empty to auto-derive)
-        - name: DETECT_PARENT_PROJECT
-          value: {{ .Values.detect.parentProject | default "" | quote }}
-        - name: DETECT_PARENT_VERSION
-          value: {{ .Values.detect.parentVersion | default "" | quote }}
-        # Present but unused unless non-empty (customer can enable later)
-        - name: PROJECT_GROUP
-          value: {{ .Values.detect.projectGroupName | default "" | quote }}
-        # Image Inspector service URL (container mode)
-        - name: INSPECTOR_URL
-          value: {{ $inspector | quote }}
-        {{- if .Values.registry.secretName }}
-        volumeMounts:
-        - name: regcred
-          mountPath: /root/.docker
-          readOnly: true
-        {{- end }}
-        command: ["/bin/sh","-c"]
-        args:
-        - |
-          set -euo pipefail
-
-          echo "[selfscan] installing tools..."
-          apk add --no-cache curl jq skopeo openjdk17-jre >/dev/null
-          KV=$(curl -sSL https://dl.k8s.io/release/stable.txt)
-          curl -fsSL -o /usr/local/bin/kubectl https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl
-          chmod +x /usr/local/bin/kubectl
-
-          echo "[selfscan] waiting for BD URL to respond: ${BD_URL}"
-          for i in $(seq 1 60); do
-            if curl -sk --max-time 5 "${BD_URL}" >/dev/null 2>&1; then
-              echo "[selfscan] BD is reachable"
-              break
-            fi
-            echo "[selfscan] BD not reachable yet, retrying..."
-            sleep 5
-          done
-
-          echo "[selfscan] discovering images in namespace=${TARGET_NS}, selector='${LABEL_SELECTOR}'"
-          PODS_JSON=$(kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" -o json)
-          IMAGES=$(echo "${PODS_JSON}" | jq -r '
-            [
-              (.items[].spec.containers[]?.image),
-              (.items[].spec.initContainers[]?.image)
-            ] | map(select(. != null)) | unique[]')
-
-          if [ -z "${IMAGES}" ]; then
-            echo "[selfscan] no images found by selector; exiting 0"
-            exit 0
-          fi
-
-          echo "[selfscan] found images:"
-          echo "${IMAGES}" | sed 's/^/  - /'
-
-          # Parent project/version:
-          # name: env override DETECT_PARENT_PROJECT, else from selector app=<name>, else "selfscan"
-          # version: env override DETECT_PARENT_VERSION, else pod label 'version' on first pod, else "current"
-          if [ -n "${DETECT_PARENT_PROJECT}" ]; then
-            PARENT_PROJECT="${DETECT_PARENT_PROJECT}"
-          else
-            PARENT_PROJECT=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app=\([^,]*\).*/\1/p')
-            [ -z "${PARENT_PROJECT}" ] && PARENT_PROJECT="selfscan"
-          fi
-
-          if [ -n "${DETECT_PARENT_VERSION}" ]; then
-            PARENT_VERSION="${DETECT_PARENT_VERSION}"
-          else
-            PARENT_VERSION=$(echo "${PODS_JSON}" | jq -r '.items[0].metadata.labels.version // empty')
-            [ -z "${PARENT_VERSION}" ] && PARENT_VERSION="current"
-          fi
-
-          echo "[selfscan] parent: ${PARENT_PROJECT}  version: ${PARENT_VERSION}"
-
-          # Base Detect configuration (shared)
-          cat >/tmp/base.props <<EOF
-blackduck.url=${BD_URL}
-blackduck.api.token=${BD_TOKEN}
-blackduck.trust.cert=${TRUST_CERT}
-detect.wait.for.results=true
-detect.tools=DOCKER
-# Use in-cluster Image Inspector service (container mode)
-detect.docker.passthrough.imageinspector.service.url=${INSPECTOR_URL}
-detect.docker.passthrough.imageinspector.service.start=false
-EOF
-
-          # Project group present but only applied if non-empty
-          if [ -n "${PROJECT_GROUP}" ]; then
-            echo "detect.project.group.name=${PROJECT_GROUP}" >> /tmp/base.props
-          fi
-
-          # Fetch Detect launcher once
-          DETECT="/tmp/detect.sh"
-          echo "[selfscan] fetching Detect launcher..."
-          curl -fsSL https://detect.blackduck.com/detect10.sh -o "${DETECT}"
-          chmod +x "${DETECT}"
-
-          FAIL=0
-
-          echo "${IMAGES}" | while read -r IMAGE; do
-            [ -z "${IMAGE}" ] && continue
-            echo "-----------------------------------------------"
-            echo "[selfscan] Inspecting ${IMAGE}"
-
-            # microservice project name = repo basename (strip tag/digest first)
-            REPO=$(printf "%s" "${IMAGE}" | cut -d@ -f1 | cut -d: -f1)
-            MICROSVC=$(basename "${REPO}")
-
-            # version name = image tag if present; else short digest fallback
-            TAG=$(printf "%s" "${IMAGE}" | awk -F: 'NF>1{print $NF}')
-            if [ -n "${TAG}" ] && [ "${TAG}" != "${IMAGE}" ]; then
-              VERSION_NAME="${TAG}"
-            else
-              DIGEST=$(skopeo inspect docker://"${IMAGE}" 2>/dev/null | jq -r '.Digest')
-              if [ -z "${DIGEST}" ] || [ "${DIGEST}" = "null" ]; then
-                DIGEST=$(skopeo inspect --raw "docker://${IMAGE}" 2>/dev/null | sha256sum | awk '{print $1}')
-                [ -z "${DIGEST}" ] && DIGEST="unknown"
-                SHORT=$(printf '%s' "${DIGEST}" | cut -c1-12)
-              else
-                SHORT=$(printf '%s' "${DIGEST#sha256:}" | cut -c1-12)
-              fi
-              VERSION_NAME="img-${SHORT}"
-            fi
-
-            # Per-image Detect config (parent → child)
-            cat >/tmp/run.props <<EOF
-detect.project.parent.name=${PARENT_PROJECT}
-detect.project.parent.version.name=${PARENT_VERSION}
-detect.project.name=${MICROSVC}
-detect.project.version.name=${VERSION_NAME}
-detect.docker.image=${IMAGE}
-detect.policy.check.fail.on.severities=${POLICY_FAIL_SEVS}
-EOF
-
-            cat /tmp/base.props /tmp/run.props > /tmp/detect.props
-
-            echo "[selfscan] run Detect for ${MICROSVC}:${VERSION_NAME}"
-            set +e
-            "${DETECT}" --detect.configuration.file=/tmp/detect.props
-            RC=$?
-            set -e
-
-            if [ $RC -ne 0 ]; then
-              echo "[selfscan][FAIL] Detect exited ${RC} for ${IMAGE}"
-              FAIL=1
-              continue
-            fi
-
-            echo "[selfscan][PASS] ${IMAGE}"
-          done
-
-          if [ $FAIL -ne 0 ]; then
-            echo "[selfscan] one or more images failed; marking Job failed"
-            exit 1
-          fi
-
-          # Optional: annotate workloads only on overall success
-          if [ "${ANNOTATE}" = "true" ]; then
-            echo "[selfscan] annotating workloads as pass"
-            for KIND in deployments statefulsets daemonsets; do
-              kubectl -n "${TARGET_NS}" get ${KIND} -l "${LABEL_SELECTOR}" -o name | while read -r RES; do
-                kubectl -n "${TARGET_NS}" annotate "${RES}" \
-                  "${ANNO_KEY}=${ANNO_VALUE}" \
-                  "blackduck.synopsys.com/parent=${PARENT_PROJECT}" \
-                  "blackduck.synopsys.com/parent-version=${PARENT_VERSION}" \
-                  --overwrite || true
-              done
-            done
-          fi
-
-          echo "[selfscan] all images scanned successfully"
+        - name: run
+          image: {{ default "alpine:3.19" .Values.runner.image | quote }}
+          volumeMounts:
+            - name: shared
+              mountPath: /shared
+            - name: script
+              mountPath: /opt/selfscan
+              readOnly: true
+          env:
+            - name: BD_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default "blackduck-creds" .Values.blackduck.tokenSecretName | quote }}
+                  key: url
+            - name: BD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default "blackduck-creds" .Values.blackduck.tokenSecretName | quote }}
+                  key: token
+            - name: TARGET_NS
+              value: {{ $ns | quote }}
+            - name: LABEL_SELECTOR
+              value: {{ $selector | quote }}
+            - name: ANNOTATE
+              value: {{ ternary "true" "false" $annotate | quote }}
+            - name: ANNO_KEY
+              value: {{ $annoKey | quote }}
+            - name: ANNO_VALUE
+              value: {{ $annoVal | quote }}
+            - name: POLICY_FAIL_SEVS
+              value: {{ default "CRITICAL,BLOCKER" .Values.detect.policyFailSeverities | quote }}
+            - name: TRUST_CERT
+              value: {{ ternary "true" "false" $trust | quote }}
+            - name: INSPECTOR_URL
+              value: {{ $inspectorURL | quote }}
+            - name: SHARED_LOCAL
+              value: "/shared"
+            - name: SHARED_REMOTE
+              value: "/opt/blackduck/blackduck-imageinspector/shared"
+            - name: DETECT_PARENT_PROJECT
+              value: {{ default "" .Values.detect.parentProject | quote }}
+            - name: DETECT_PARENT_VERSION
+              value: {{ default "" .Values.detect.parentVersion | quote }}
+            - name: PROJECT_GROUP
+              value: {{ default "" .Values.detect.projectGroupName | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - exec /opt/selfscan/run.sh
