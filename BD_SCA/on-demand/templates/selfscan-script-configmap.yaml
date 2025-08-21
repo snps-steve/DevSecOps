@@ -15,7 +15,7 @@ data:
     echo "[selfscan] Inspector URL ${INSPECTOR_URL}"
 
     echo "[selfscan] Installing tools..."
-    apk add --no-cache curl jq skopeo openjdk17-jre coreutils >/dev/null 2>&1
+    apk add --no-cache curl jq skopeo openjdk17-jre coreutils bash >/dev/null 2>&1
 
     echo "[selfscan] Installing kubectl..."
     KV=$(curl -sSL https://dl.k8s.io/release/stable.txt)
@@ -110,18 +110,18 @@ data:
 
     # Create base Detect properties
     cat >/tmp/base.props <<BASEEOF
-    blackduck.url=${BD_URL}
-    blackduck.api.token=${BD_TOKEN}
-    blackduck.trust.cert=${TRUST_CERT}
-    detect.wait.for.results=true
-    detect.cleanup=false
-    detect.tools=DOCKER
-    detect.docker.passthrough.imageinspector.service.url=${INSPECTOR_URL}
-    detect.docker.passthrough.imageinspector.service.start=false
-    detect.docker.passthrough.shared.dir.path.local=${SHARED_LOCAL}
-    detect.docker.passthrough.shared.dir.path.imageinspector=${SHARED_REMOTE}
-    logging.level.com.synopsys.integration=DEBUG
-    BASEEOF
+blackduck.url=${BD_URL}
+blackduck.api.token=${BD_TOKEN}
+blackduck.trust.cert=${TRUST_CERT}
+detect.wait.for.results=true
+detect.cleanup=false
+detect.tools=DOCKER
+detect.docker.passthrough.imageinspector.service.url=${INSPECTOR_URL}
+detect.docker.passthrough.imageinspector.service.start=false
+detect.docker.passthrough.shared.dir.path.local=${SHARED_LOCAL}
+detect.docker.passthrough.shared.dir.path.imageinspector=${SHARED_REMOTE}
+logging.level.com.synopsys.integration=DEBUG
+BASEEOF
 
     if [ -n "${PROJECT_GROUP}" ]; then
       echo "detect.project.group.name=${PROJECT_GROUP}" >> /tmp/base.props
@@ -179,20 +179,21 @@ data:
 
       # Create Detect run properties
       cat >/tmp/run.props <<RUNEOF
-    detect.project.parent.name=${PARENT_PROJECT}
-    detect.project.parent.version.name=${PARENT_VERSION}
-    detect.project.name=${MICROSVC}
-    detect.project.version.name=${VERSION_NAME}
-    detect.docker.tar=${TAR}
-    detect.policy.check.fail.on.severities=${POLICY_FAIL_SEVS}
-    RUNEOF
+detect.project.parent.name=${PARENT_PROJECT}
+detect.project.parent.version.name=${PARENT_VERSION}
+detect.project.name=${MICROSVC}
+detect.project.version.name=${VERSION_NAME}
+detect.docker.tar=${TAR}
+detect.policy.check.fail.on.severities=${POLICY_FAIL_SEVS}
+RUNEOF
 
       # Combine properties
       cat /tmp/base.props /tmp/run.props > /tmp/detect.props
 
       echo "[selfscan] Running Detect for ${MICROSVC} ${VERSION_NAME}..."
       set +e
-      "${DETECT}" --detect.configuration.file=/tmp/detect.props
+      # Run Detect with bash explicitly
+      bash "${DETECT}" --detect.configuration.file=/tmp/detect.props
       DETECT_RC=$?
       set -e
 
@@ -233,3 +234,5 @@ data:
         done
       done
     fi
+
+    echo "[selfscan] All images scanned successfully!"
