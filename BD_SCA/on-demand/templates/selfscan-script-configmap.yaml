@@ -1,0 +1,235 @@
+{{- $ns := default .Release.Namespace .Values.target.namespace -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "selfscan.name" . }}-script
+  namespace: {{ $ns }}
+data:
+  run.sh: |
+    #!/bin/sh
+    set -euo pipefail
+
+    echo "[selfscan] Starting Black Duck selfscan job"
+    echo "[selfscan] Target namespace ${TARGET_NS}"
+    echo "[selfscan] Label selector ${LABEL_SELECTOR}"
+    echo "[selfscan] Inspector URL ${INSPECTOR_URL}"
+
+    echo "[selfscan] Installing tools..."
+    apk add --no-cache curl jq skopeo openjdk17-jre coreutils >/dev/null 2>&1
+
+    echo "[selfscan] Installing kubectl..."
+    KV=$(curl -sSL https://dl.k8s.io/release/stable.txt)
+    curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl"
+    chmod +x /usr/local/bin/kubectl
+
+    # Configure registry authentication if provided
+    if [ -n "${REGISTRY_SECRET_PATH:-}" ] && [ -d "${REGISTRY_SECRET_PATH}" ]; then
+      echo "[selfscan] Configuring registry authentication..."
+      mkdir -p ~/.docker
+      if [ -f "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ]; then
+        cp "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ~/.docker/config.json
+      fi
+    fi
+
+    echo "[selfscan] Waiting for Black Duck URL to respond ${BD_URL}"
+    for i in $(seq 1 60); do
+      if curl -sk --max-time 10 "${BD_URL}/api/current-version" >/dev/null 2>&1; then
+        echo "[selfscan] Black Duck is reachable"
+        break
+      fi
+      echo "[selfscan] Black Duck not reachable yet, retrying in 5s..."
+      sleep 5
+      if [ $i -eq 60 ]; then
+        echo "[selfscan] ERROR Black Duck is not reachable after 5 minutes"
+        exit 1
+      fi
+    done
+
+    echo "[selfscan] Waiting for Image Inspector service ${INSPECTOR_URL}"
+    for i in $(seq 1 30); do
+      if curl -sk --max-time 5 "${INSPECTOR_URL}/health" >/dev/null 2>&1; then
+        echo "[selfscan] Image Inspector is ready"
+        break
+      fi
+      echo "[selfscan] Image Inspector not ready yet, retrying in 10s..."
+      sleep 10
+      if [ $i -eq 30 ]; then
+        echo "[selfscan] ERROR Image Inspector is not ready after 5 minutes"
+        exit 1
+      fi
+    done
+
+    echo "[selfscan] Discovering images in namespace=${TARGET_NS}, selector=${LABEL_SELECTOR}"
+    PODS_JSON=$(kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" -o json 2>/dev/null || echo '{"items":[]}')
+
+    if [ "$(echo "${PODS_JSON}" | jq '.items | length')" -eq 0 ]; then
+      echo "[selfscan] No pods found matching selector; exiting successfully"
+      exit 0
+    fi
+
+    IMAGES=$(echo "${PODS_JSON}" | jq -r '
+      [
+        (.items[].spec.containers[]?.image),
+        (.items[].spec.initContainers[]?.image)
+      ] | map(select(. != null)) | unique[]' 2>/dev/null || echo "")
+
+    if [ -z "${IMAGES}" ]; then
+      echo "[selfscan] No container images found; exiting successfully"
+      exit 0
+    fi
+
+    echo "[selfscan] Found images"
+    echo "${IMAGES}" | sed 's/^/  - /'
+
+    # Derive parent project/version with better logic
+    if [ -n "${DETECT_PARENT_PROJECT}" ]; then
+      PARENT_PROJECT="${DETECT_PARENT_PROJECT}"
+    else
+      # Try to extract from label selector
+      PARENT_PROJECT=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app=\([^,]*\).*/\1/p' | head -1)
+      if [ -z "${PARENT_PROJECT}" ]; then
+        PARENT_PROJECT=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app\.kubernetes\.io\/name=\([^,]*\).*/\1/p' | head -1)
+      fi
+      if [ -z "${PARENT_PROJECT}" ]; then
+        PARENT_PROJECT="kubernetes-scan"
+      fi
+    fi
+
+    if [ -n "${DETECT_PARENT_VERSION}" ]; then
+      PARENT_VERSION="${DETECT_PARENT_VERSION}"
+    else
+      # Try multiple label patterns for version
+      PARENT_VERSION=$(echo "${PODS_JSON}" | jq -r '.items[0].metadata.labels.version // .items[0].metadata.labels["app.kubernetes.io/version"] // empty' 2>/dev/null || echo "")
+      if [ -z "${PARENT_VERSION}" ]; then
+        PARENT_VERSION="current"
+      fi
+    fi
+
+    echo "[selfscan] Parent project ${PARENT_PROJECT}"
+    echo "[selfscan] Parent version ${PARENT_VERSION}"
+
+    # Create base Detect properties
+    cat >/tmp/base.props <<BASEEOF
+    blackduck.url=${BD_URL}
+    blackduck.api.token=${BD_TOKEN}
+    blackduck.trust.cert=${TRUST_CERT}
+    detect.wait.for.results=true
+    detect.cleanup=false
+    detect.tools=DOCKER
+    detect.docker.passthrough.imageinspector.service.url=${INSPECTOR_URL}
+    detect.docker.passthrough.imageinspector.service.start=false
+    detect.docker.passthrough.shared.dir.path.local=${SHARED_LOCAL}
+    detect.docker.passthrough.shared.dir.path.imageinspector=${SHARED_REMOTE}
+    logging.level.com.synopsys.integration=DEBUG
+    BASEEOF
+
+    if [ -n "${PROJECT_GROUP}" ]; then
+      echo "detect.project.group.name=${PROJECT_GROUP}" >> /tmp/base.props
+    fi
+
+    # Download Detect
+    DETECT=/tmp/detect.sh
+    echo "[selfscan] Downloading Black Duck Detect..."
+    curl -fsSL https://detect.blackduck.com/detect10.sh -o "${DETECT}"
+    chmod +x "${DETECT}"
+
+    # Ensure shared directory exists
+    mkdir -p "${SHARED_LOCAL}/target"
+    FAILED_IMAGES=""
+    SUCCESS_COUNT=0
+    TOTAL_COUNT=0
+
+    echo "${IMAGES}" | while read -r IMAGE; do
+      [ -z "${IMAGE}" ] && continue
+      TOTAL_COUNT=$((TOTAL_COUNT + 1))
+
+      echo "=============================================="
+      echo "[selfscan] Processing image ${TOTAL_COUNT} - ${IMAGE}"
+
+      # Extract repository and tag/digest info
+      REPO=$(printf "%s" "${IMAGE}" | cut -d@ -f1 | cut -d: -f1)
+      MICROSVC=$(basename "${REPO}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+
+      # Determine version name
+      if echo "${IMAGE}" | grep -q '@sha256'; then
+        # Image specified by digest
+        DIGEST=$(echo "${IMAGE}" | cut -d@ -f2)
+        SHORT_DIGEST=$(echo "${DIGEST}" | cut -c8-19)
+        VERSION_NAME="digest-${SHORT_DIGEST}"
+      elif echo "${IMAGE}" | grep -q ':'; then
+        # Image specified by tag
+        TAG=$(echo "${IMAGE}" | cut -d: -f2- | cut -d@ -f1)
+        VERSION_NAME="${TAG}"
+      else
+        # No tag specified, assume latest
+        VERSION_NAME="latest"
+      fi
+
+      echo "[selfscan] Project ${MICROSVC} Version ${VERSION_NAME}"
+
+      # Create image archive
+      TAR="${SHARED_LOCAL}/target/${MICROSVC}-${VERSION_NAME}.tar"
+      echo "[selfscan] Saving image to ${TAR}..."
+
+      if ! skopeo copy --retry-times=3 "docker://${IMAGE}" "docker-archive:${TAR}:${IMAGE}"; then
+        echo "[selfscan][ERROR] Failed to save image ${IMAGE}"
+        FAILED_IMAGES="${FAILED_IMAGES} ${IMAGE}"
+        continue
+      fi
+
+      # Create Detect run properties
+      cat >/tmp/run.props <<RUNEOF
+    detect.project.parent.name=${PARENT_PROJECT}
+    detect.project.parent.version.name=${PARENT_VERSION}
+    detect.project.name=${MICROSVC}
+    detect.project.version.name=${VERSION_NAME}
+    detect.docker.tar=${TAR}
+    detect.policy.check.fail.on.severities=${POLICY_FAIL_SEVS}
+    RUNEOF
+
+      # Combine properties
+      cat /tmp/base.props /tmp/run.props > /tmp/detect.props
+
+      echo "[selfscan] Running Detect for ${MICROSVC} ${VERSION_NAME}..."
+      set +e
+      "${DETECT}" --detect.configuration.file=/tmp/detect.props
+      DETECT_RC=$?
+      set -e
+
+      if [ $DETECT_RC -ne 0 ]; then
+        echo "[selfscan][FAIL] Detect failed with exit code ${DETECT_RC} for ${IMAGE}"
+        FAILED_IMAGES="${FAILED_IMAGES} ${IMAGE}"
+      else
+        echo "[selfscan][PASS] Successfully scanned ${IMAGE}"
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+      fi
+
+      # Clean up the tar file to save space
+      rm -f "${TAR}"
+    done
+
+    echo "=============================================="
+    echo "[selfscan] Scan Summary"
+    echo "[selfscan] Total images ${TOTAL_COUNT}"
+    echo "[selfscan] Successful ${SUCCESS_COUNT}"
+
+    if [ -n "${FAILED_IMAGES}" ]; then
+      echo "[selfscan] Failed images${FAILED_IMAGES}"
+      echo "[selfscan] Some scans failed - marking job as failed"
+      exit 1
+    fi
+
+    # Annotate workloads if requested
+    if [ "${ANNOTATE}" = "true" ]; then
+      echo "[selfscan] Annotating workloads with scan results..."
+      for KIND in deployments statefulsets daemonsets; do
+        kubectl -n "${TARGET_NS}" get ${KIND} -l "${LABEL_SELECTOR}" -o name 2>/dev/null | while read -r RES; do
+          kubectl -n "${TARGET_NS}" annotate "${RES}" \
+            "${ANNO_KEY}=${ANNO_VALUE}" \
+            "blackduck.synopsys.com/parent=${PARENT_PROJECT}" \
+            "blackduck.synopsys.com/parent-version=${PARENT_VERSION}" \
+            "blackduck.synopsys.com/scan-timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --overwrite 2>/dev/null || true
+        done
+      done
+    fi
