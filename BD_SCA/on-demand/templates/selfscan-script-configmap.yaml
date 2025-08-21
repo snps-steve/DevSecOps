@@ -1,9 +1,8 @@
-{{- $ns := default .Release.Namespace .Values.target.namespace -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "selfscan.name" . }}-script
-  namespace: {{ $ns }}
+  name: "{{ include \"selfscan.name\" . }}-script"
+  namespace: "{{ .Values.target.namespace | default .Release.Namespace }}"
 data:
   run.sh: |
     #!/bin/sh
@@ -109,7 +108,7 @@ data:
     echo "[selfscan] Parent version ${PARENT_VERSION}"
 
     # Create base Detect properties
-    cat >/tmp/base.props <<BASEEOF
+    cat > /tmp/base.props <<BASEEOF
 blackduck.url=${BD_URL}
 blackduck.api.token=${BD_TOKEN}
 blackduck.trust.cert=${TRUST_CERT}
@@ -178,7 +177,7 @@ BASEEOF
       fi
 
       # Create Detect run properties
-      cat >/tmp/run.props <<RUNEOF
+      cat > /tmp/run.props <<RUNEOF
 detect.project.parent.name=${PARENT_PROJECT}
 detect.project.parent.version.name=${PARENT_VERSION}
 detect.project.name=${MICROSVC}
