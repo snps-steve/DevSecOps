@@ -1,0 +1,33 @@
+target:
+  namespace: "bd"                                         # <-- BD namespace
+  labelSelector: "app.kubernetes.io/instance=blackduck"   # <-- BD release selector
+  annotateWorkloads: false                                # set true to annotate BD Deployments/STS/DS
+  annotateKey: "blackduck.synopsys.com/policy"
+  annotateValueOnPass: "pass"
+
+blackduck:
+  url: ""                              # leave blank; we pull from Secret at runtime
+  token: ""                            # leave blank; we pull from Secret at runtime
+  createSecret: false                  # Secret already exists
+  tokenSecretName: "blackduck-creds"   # Secret will live in the target namespace
+  trustCert: true                      # Set based on your cert setup
+
+dockerInspector:
+  install: true                        # Install our own working image inspector
+  replicas: 1
+  image: "blackducksoftware/blackduck-imageinspector-ubuntu:6.2.1"
+  serviceUrl: ""                       # Will auto-generate
+  sharedPvcName: "bd-imageinspector-shared"
+  createSharedPvc: false               # PVC already exists and is working
+
+detect:
+  policyFailSeverities: "CRITICAL,BLOCKER"
+  parentProject: ""
+  parentVersion: ""
+  projectGroupName: ""
+
+registry:
+  secretName: ""
+
+runner:
+  image: "alpine:3.19"
