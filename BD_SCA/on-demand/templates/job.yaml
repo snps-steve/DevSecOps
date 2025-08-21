@@ -1,0 +1,111 @@
+{{- $ns := default .Release.Namespace .Values.target.namespace -}}
+{{- $selector := default "app=blackduck" .Values.target.labelSelector -}}
+{{- $inspectorURL := .Values.dockerInspector.serviceUrl -}}
+{{- if not $inspectorURL -}}
+{{-   $inspectorURL = printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" $ns -}}
+{{- end -}}
+{{- $sharedPVC := default "bd-imageinspector-shared" .Values.dockerInspector.sharedPvcName -}}
+{{- $annoKey := default "blackduck.synopsys.com/policy" .Values.target.annotateKey -}}
+{{- $annoVal := default "pass" .Values.target.annotateValueOnPass -}}
+
+{{- $annotate := false -}}
+{{- if hasKey .Values "target" }}{{- if hasKey .Values.target "annotateWorkloads" }}{{- $annotate = .Values.target.annotateWorkloads }}{{- end }}{{- end -}}
+{{- $trust := true -}}
+{{- if hasKey .Values "blackduck" }}{{- if hasKey .Values.blackduck "trustCert" }}{{- $trust = .Values.blackduck.trustCert }}{{- end }}{{- end -}}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "selfscan.name" . }}
+  namespace: {{ $ns }}
+    #annotations:
+    #"helm.sh/hook": post-install,post-upgrade
+    #"helm.sh/hook-weight": "10"
+    #"helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  backoffLimit: 2  # Allow some retries for transient failures
+  ttlSecondsAfterFinished: 900
+  template:
+    spec:
+      serviceAccountName: {{ include "selfscan.sa" . }}
+      restartPolicy: Never
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: {{ $sharedPVC | quote }}
+        - name: script
+          configMap:
+            name: {{ include "selfscan.name" . }}-script
+            defaultMode: 0555
+        {{- if .Values.registry.secretName }}
+        - name: registry-creds
+          secret:
+            secretName: {{ .Values.registry.secretName }}
+        {{- end }}
+      containers:
+        - name: run
+          image: {{ default "alpine:3.19" .Values.runner.image | quote }}
+          volumeMounts:
+            - name: shared
+              mountPath: /shared
+            - name: script
+              mountPath: /opt/selfscan
+              readOnly: true
+            {{- if .Values.registry.secretName }}
+            - name: registry-creds
+              mountPath: /tmp/registry-creds
+              readOnly: true
+            {{- end }}
+          env:
+            - name: BD_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default "blackduck-creds" .Values.blackduck.tokenSecretName | quote }}
+                  key: url
+            - name: BD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default "blackduck-creds" .Values.blackduck.tokenSecretName | quote }}
+                  key: token
+            - name: TARGET_NS
+              value: {{ $ns | quote }}
+            - name: LABEL_SELECTOR
+              value: {{ $selector | quote }}
+            - name: ANNOTATE
+              value: {{ ternary "true" "false" $annotate | quote }}
+            - name: ANNO_KEY
+              value: {{ $annoKey | quote }}
+            - name: ANNO_VALUE
+              value: {{ $annoVal | quote }}
+            - name: POLICY_FAIL_SEVS
+              value: {{ default "CRITICAL,BLOCKER" .Values.detect.policyFailSeverities | quote }}
+            - name: TRUST_CERT
+              value: {{ ternary "true" "false" $trust | quote }}
+            - name: INSPECTOR_URL
+              value: {{ $inspectorURL | quote }}
+            - name: SHARED_LOCAL
+              value: "/shared"
+            - name: SHARED_REMOTE
+              value: "/opt/blackduck/blackduck-imageinspector/shared"
+            - name: DETECT_PARENT_PROJECT
+              value: {{ default "" .Values.detect.parentProject | quote }}
+            - name: DETECT_PARENT_VERSION
+              value: {{ default "" .Values.detect.parentVersion | quote }}
+            - name: PROJECT_GROUP
+              value: {{ default "" .Values.detect.projectGroupName | quote }}
+            {{- if .Values.registry.secretName }}
+            - name: REGISTRY_SECRET_PATH
+              value: "/tmp/registry-creds"
+            {{- end }}
+          # Add resource limits
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          command:
+            - /bin/sh
+            - -c
+            - exec /opt/selfscan/run.sh
