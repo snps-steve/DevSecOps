@@ -107,20 +107,18 @@ data:
     echo "[selfscan] Parent project ${PARENT_PROJECT}"
     echo "[selfscan] Parent version ${PARENT_VERSION}"
 
-    # Create base Detect properties
-    cat > /tmp/base.props <<BASEEOF
-blackduck.url=${BD_URL}
-blackduck.api.token=${BD_TOKEN}
-blackduck.trust.cert=${TRUST_CERT}
-detect.wait.for.results=true
-detect.cleanup=false
-detect.tools=DOCKER
-detect.docker.passthrough.imageinspector.service.url=${INSPECTOR_URL}
-detect.docker.passthrough.imageinspector.service.start=false
-detect.docker.passthrough.shared.dir.path.local=${SHARED_LOCAL}
-detect.docker.passthrough.shared.dir.path.imageinspector=${SHARED_REMOTE}
-logging.level.com.synopsys.integration=DEBUG
-BASEEOF
+    # Create base Detect properties using echo instead of heredoc
+    echo "blackduck.url=${BD_URL}" > /tmp/base.props
+    echo "blackduck.api.token=${BD_TOKEN}" >> /tmp/base.props
+    echo "blackduck.trust.cert=${TRUST_CERT}" >> /tmp/base.props
+    echo "detect.wait.for.results=true" >> /tmp/base.props
+    echo "detect.cleanup=false" >> /tmp/base.props
+    echo "detect.tools=DOCKER" >> /tmp/base.props
+    echo "detect.docker.passthrough.imageinspector.service.url=${INSPECTOR_URL}" >> /tmp/base.props
+    echo "detect.docker.passthrough.imageinspector.service.start=false" >> /tmp/base.props
+    echo "detect.docker.passthrough.shared.dir.path.local=${SHARED_LOCAL}" >> /tmp/base.props
+    echo "detect.docker.passthrough.shared.dir.path.imageinspector=${SHARED_REMOTE}" >> /tmp/base.props
+    echo "logging.level.com.synopsys.integration=DEBUG" >> /tmp/base.props
 
     if [ -n "${PROJECT_GROUP}" ]; then
       echo "detect.project.group.name=${PROJECT_GROUP}" >> /tmp/base.props
@@ -176,15 +174,13 @@ BASEEOF
         continue
       fi
 
-      # Create Detect run properties
-      cat > /tmp/run.props <<RUNEOF
-detect.project.parent.name=${PARENT_PROJECT}
-detect.project.parent.version.name=${PARENT_VERSION}
-detect.project.name=${MICROSVC}
-detect.project.version.name=${VERSION_NAME}
-detect.docker.tar=${TAR}
-detect.policy.check.fail.on.severities=${POLICY_FAIL_SEVS}
-RUNEOF
+      # Create Detect run properties using echo instead of heredoc
+      echo "detect.project.parent.name=${PARENT_PROJECT}" > /tmp/run.props
+      echo "detect.project.parent.version.name=${PARENT_VERSION}" >> /tmp/run.props
+      echo "detect.project.name=${MICROSVC}" >> /tmp/run.props
+      echo "detect.project.version.name=${VERSION_NAME}" >> /tmp/run.props
+      echo "detect.docker.tar=${TAR}" >> /tmp/run.props
+      echo "detect.policy.check.fail.on.severities=${POLICY_FAIL_SEVS}" >> /tmp/run.props
 
       # Combine properties
       cat /tmp/base.props /tmp/run.props > /tmp/detect.props
