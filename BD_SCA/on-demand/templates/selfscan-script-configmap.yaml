@@ -21,6 +21,16 @@ data:
     curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl"
     chmod +x /usr/local/bin/kubectl
 
+    # Verify the secret exists and has the expected keys
+    echo "[selfscan] Verifying Black Duck credentials secret..."
+    if kubectl get secret blackduck-creds -n ${TARGET_NS} >/dev/null 2>&1; then
+      echo "[selfscan] Secret 'blackduck-creds' exists"
+      kubectl get secret blackduck-creds -n ${TARGET_NS} -o jsonpath='{.data}' | jq 'keys'
+    else
+      echo "[selfscan] ERROR: Secret 'blackduck-creds' not found in namespace ${TARGET_NS}"
+      exit 1
+    fi
+
     # Configure registry authentication if provided
     if [ -n "${REGISTRY_SECRET_PATH:-}" ] && [ -d "${REGISTRY_SECRET_PATH}" ]; then
       echo "[selfscan] Configuring registry authentication..."
@@ -107,6 +117,17 @@ data:
     echo "[selfscan] Parent project ${PARENT_PROJECT}"
     echo "[selfscan] Parent version ${PARENT_VERSION}"
 
+    # Debug environment variables
+    echo "[selfscan] Debugging environment variables..."
+    echo "[selfscan] BD_URL is set: $([ -n "${BD_URL}" ] && echo "YES" || echo "NO")"
+    echo "[selfscan] BD_TOKEN is set: $([ -n "${BD_TOKEN}" ] && echo "YES" || echo "NO")"
+    if [ -n "${BD_URL}" ]; then
+      echo "[selfscan] BD_URL length: ${#BD_URL} characters"
+    fi
+    if [ -n "${BD_TOKEN}" ]; then
+      echo "[selfscan] BD_TOKEN length: ${#BD_TOKEN} characters"
+    fi
+
     # Create base Detect properties using echo instead of heredoc
     echo "blackduck.url=${BD_URL}" > /tmp/base.props
     echo "blackduck.api.token=${BD_TOKEN}" >> /tmp/base.props
@@ -184,6 +205,10 @@ data:
 
       # Combine properties
       cat /tmp/base.props /tmp/run.props > /tmp/detect.props
+
+      # Debug the final detect properties
+      echo "[selfscan] Final detect.props content:"
+      cat /tmp/detect.props
 
       echo "[selfscan] Running Detect for ${MICROSVC} ${VERSION_NAME}..."
       set +e
