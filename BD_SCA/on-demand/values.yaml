@@ -15,10 +15,19 @@ detect:
   policyFailSeverities: "CRITICAL,BLOCKER"
   parentProject: ""                    # Optional: override parent project name
   parentVersion: ""                    # Optional: override parent version
-  projectGroupName: ""                 # Optional: Black Duck project group
+  projectGroupName: ""                 # Optional: Black Duck project group/application ID
+  projectTier: "3"                     # Project tier (1=Critical, 2=High, 3=Medium, 4=Low)
 
 registry:
   secretName: ""                       # Optional: registry auth secret name
 
 runner:
-  image: "alpine:3.19"                 # Base image for scan job
+  image: "docker:24-dind"              # Docker-in-Docker image for BDSC container scanning
+
+# Docker Inspector configuration (if using standalone Docker Inspector)
+dockerInspector:
+  install: false                       # Set to true if you want dedicated Docker Inspector services
+  replicas: 1
+  image: "blackducksoftware/blackduck-imageinspector-ubuntu:6.2.1"
+  createSharedPvc: false
+  sharedPvcName: "bd-imageinspector-shared"
