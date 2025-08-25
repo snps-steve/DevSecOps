@@ -14,56 +14,93 @@ data:
     echo "Black Duck URL: ${BD_URL}"
 
     # Install tools
+    echo "Installing required tools..."
     apk add --no-cache curl jq bash coreutils openjdk17-jre skopeo
 
     # Install kubectl
+    echo "Installing kubectl..."
     curl -fsSL -o /usr/local/bin/kubectl \
       "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
     chmod +x /usr/local/bin/kubectl
 
     # Configure registry auth if provided
     if [ -n "${REGISTRY_SECRET_PATH:-}" ] && [ -d "${REGISTRY_SECRET_PATH}" ]; then
+      echo "Configuring registry authentication..."
       mkdir -p ~/.docker
       if [ -f "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ]; then
         cp "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ~/.docker/config.json
+        echo "Registry credentials configured"
       fi
     fi
 
     # Test Black Duck connectivity
+    echo "Testing Black Duck connectivity..."
     if ! curl -sk --max-time 10 "${BD_URL}/api/current-version"; then
-      echo "Cannot reach Black Duck at ${BD_URL}"
+      echo "ERROR: Cannot reach Black Duck at ${BD_URL}"
       exit 1
     fi
+    echo "Black Duck connectivity confirmed"
 
     # Download Detect
+    echo "Downloading Synopsys Detect..."
     curl -fsSL https://detect.synopsys.com/detect10.sh -o /tmp/detect.sh
     chmod +x /tmp/detect.sh
+    echo "Synopsys Detect downloaded successfully"
 
-    # Get container images
+    # Get container images from target namespace
+    echo "Fetching container images from namespace ${TARGET_NS} with selector '${LABEL_SELECTOR}'"
     PODS_JSON=$(kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" -o json || echo '{"items":[]}')
 
-    IMAGES=$(echo "${PODS_JSON}" | jq -r '[(.items[].spec.containers[]?.image // empty), (.items[].spec.initContainers[]?.image // empty)] | map(select(. != null and . != "")) | unique | .[]' || echo "")
+    # Extract unique images from containers and initContainers
+    IMAGES=$(echo "${PODS_JSON}" | jq -r '
+      [
+        (.items[].spec.containers[]?.image // empty),
+        (.items[].spec.initContainers[]?.image // empty)
+      ] 
+      | map(select(. != null and . != "")) 
+      | unique 
+      | .[]' 2>/dev/null || echo "")
 
     if [ -z "${IMAGES}" ]; then
-      echo "No container images found"
+      echo "No container images found with selector '${LABEL_SELECTOR}' in namespace '${TARGET_NS}'"
+      echo "Available pods:"
+      kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" || echo "No pods found"
+      echo "All pods in namespace:"
+      kubectl -n "${TARGET_NS}" get pods || echo "No pods in namespace"
       exit 0
     fi
 
-    echo "Found images:"
-    echo "${IMAGES}"
+    echo "Found $(echo "${IMAGES}" | wc -l) unique images:"
+    echo "${IMAGES}" | sed 's/^/  - /'
 
     # Set parent project details
-    PARENT_PROJECT="${DETECT_PARENT_PROJECT:-kubernetes-workload}"
-    PARENT_VERSION="${DETECT_PARENT_VERSION:-current}"
+    PARENT_PROJECT="${DETECT_PARENT_PROJECT:-kubernetes-workload-${TARGET_NS}}"
+    PARENT_VERSION="${DETECT_PARENT_VERSION:-$(date +%Y-%m-%d)}"
 
     echo "Parent project: ${PARENT_PROJECT} v${PARENT_VERSION}"
 
-    # Create parent project
+    # Create parent project with a simple structure
+    echo "Creating parent project..."
     mkdir -p /tmp/parent-project
-    echo "# ${PARENT_PROJECT}" > /tmp/parent-project/README.md
-    echo '{"name": "parent", "version": "1.0.0"}' > /tmp/parent-project/package.json
-
     cd /tmp/parent-project
+
+    # Create a minimal package.json to ensure detection
+    cat > package.json << EOF
+    {
+      "name": "${PARENT_PROJECT}",
+      "version": "1.0.0",
+      "description": "Parent project for Kubernetes workloads in ${TARGET_NS} namespace",
+      "dependencies": {}
+    }
+    EOF
+
+    echo "# ${PARENT_PROJECT}" > README.md
+    echo "Kubernetes workload parent project for namespace: ${TARGET_NS}" >> README.md
+    echo "Scanned on: $(date)" >> README.md
+    echo "Label selector: ${LABEL_SELECTOR}" >> README.md
+
+    # Create parent project in Black Duck
+    echo "Creating parent project in Black Duck..."
     bash /tmp/detect.sh \
       --blackduck.url="${BD_URL}" \
       --blackduck.api.token="${BD_TOKEN}" \
@@ -72,36 +109,99 @@ data:
       --detect.project.name="${PARENT_PROJECT}" \
       --detect.project.version.name="${PARENT_VERSION}" \
       --detect.tools=DETECTOR \
-      --logging.level.com.synopsys.integration=INFO || true
+      --detect.npm.include.dev.dependencies=false \
+      --detect.project.tier="${PROJECT_TIER}" \
+      --detect.project.version.update=true \
+      --logging.level.com.synopsys.integration=INFO
+
+    PARENT_RESULT=$?
+    if [ $PARENT_RESULT -ne 0 ]; then
+      echo "WARNING: Parent project creation had issues (exit code: ${PARENT_RESULT}), continuing with container scans..."
+    else
+      echo "Parent project created successfully"
+    fi
+
+    # Function to sanitize project names
+    sanitize_project_name() {
+      local name="$1"
+      # Remove registry prefixes and convert to valid project name
+      name=$(echo "$name" | sed 's|.*/||' | sed 's/:.*$//')
+      # Replace invalid characters with hyphens and convert to lowercase  
+      name=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.-]/-/g' | sed 's/--*/-/g' | sed 's/^-\|-$//g')
+      # Ensure it's not empty and not too long
+      [ -z "$name" ] && name="unknown-image"
+      [ ${#name} -gt 100 ] && name="${name:0:100}"
+      echo "$name"
+    }
+
+    # Function to extract version from image
+    extract_version() {
+      local image="$1"
+      if echo "$image" | grep -q ':'; then
+        echo "$image" | cut -d: -f2- | cut -d@ -f1
+      elif echo "$image" | grep -q '@'; then
+        # For digest-based images, use the digest as version
+        echo "$image" | cut -d@ -f2 | cut -c1-12
+      else
+        echo "latest"
+      fi
+    }
 
     # Scan each container
+    echo "Starting container image scanning..."
     mkdir -p /tmp/container-images
     SUCCESS_COUNT=0
     TOTAL_IMAGES=0
 
-    echo "${IMAGES}" | while read -r IMAGE; do
+    # Create a temporary file to store images for processing
+    echo "${IMAGES}" > /tmp/images.txt
+
+    # Use process substitution to avoid subshell variable issues
+    while IFS= read -r IMAGE; do
       [ -z "${IMAGE}" ] && continue
       TOTAL_IMAGES=$((TOTAL_IMAGES + 1))
 
-      echo "Scanning container ${TOTAL_IMAGES}: ${IMAGE}"
+      echo ""
+      echo "=== Scanning container ${TOTAL_IMAGES}: ${IMAGE} ==="
 
-      # Extract project details
-      REPO=$(echo "${IMAGE}" | cut -d@ -f1 | cut -d: -f1)
-      PROJECT_NAME=$(basename "${REPO}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+      # Extract project details with improved parsing
+      PROJECT_NAME=$(sanitize_project_name "${IMAGE}")
+      VERSION_NAME=$(extract_version "${IMAGE}")
 
-      if echo "${IMAGE}" | grep -q ':'; then
-        VERSION_NAME=$(echo "${IMAGE}" | cut -d: -f2- | cut -d@ -f1)
-      else
-        VERSION_NAME="latest"
-      fi
+      echo "  Project Name: ${PROJECT_NAME}"
+      echo "  Version: ${VERSION_NAME}"
 
       # Download image
-      IMAGE_FILE="/tmp/container-images/${PROJECT_NAME}.tar"
-      if skopeo copy "docker://${IMAGE}" "docker-archive:${IMAGE_FILE}:${IMAGE}" --quiet; then
-        echo "Downloaded: ${IMAGE}"
+      IMAGE_FILE="/tmp/container-images/${PROJECT_NAME}-${TOTAL_IMAGES}.tar"
+      echo "  Downloading image to ${IMAGE_FILE}..."
+      
+      # Add timeout and retry logic for image download
+      DOWNLOAD_SUCCESS=false
+      for attempt in 1 2 3; do
+        echo "  Download attempt ${attempt}/3..."
+        if timeout 300 skopeo copy "docker://${IMAGE}" "docker-archive:${IMAGE_FILE}:${IMAGE}" --quiet 2>/dev/null; then
+          echo "  ✓ Downloaded: ${IMAGE}"
+          DOWNLOAD_SUCCESS=true
+          break
+        else
+          echo "  ✗ Download attempt ${attempt} failed"
+          sleep 5
+        fi
+      done
+
+      if [ "$DOWNLOAD_SUCCESS" = "true" ]; then
+        # Verify file was created and has content
+        if [ ! -f "${IMAGE_FILE}" ] || [ ! -s "${IMAGE_FILE}" ]; then
+          echo "  ✗ Downloaded file is empty or missing: ${IMAGE_FILE}"
+          continue
+        fi
+
+        echo "  File size: $(du -h ${IMAGE_FILE} | cut -f1)"
 
         # BDSC Container Scan
+        echo "  Running BDSC container scan..."
         cd /tmp
+        
         bash /tmp/detect.sh \
           --blackduck.url="${BD_URL}" \
           --blackduck.api.token="${BD_TOKEN}" \
@@ -113,22 +213,83 @@ data:
           --detect.project.parent.version.name="${PARENT_VERSION}" \
           --detect.project.name="${PROJECT_NAME}" \
           --detect.project.version.name="${VERSION_NAME}" \
+          --detect.project.tier="${PROJECT_TIER}" \
           --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVERITIES}" \
+          --detect.project.version.update=true \
+          --detect.cleanup=false \
+          --detect.project.version.distribution=EXTERNAL \
+          --detect.project.version.phase=DEVELOPMENT \
           --logging.level.com.synopsys.integration=INFO
 
         SCAN_RESULT=$?
+        
+        # Clean up image file immediately to save space
         rm -f "${IMAGE_FILE}"
 
         if [ $SCAN_RESULT -eq 0 ]; then
-          echo "SUCCESS: ${IMAGE}"
+          echo "  ✓ SUCCESS: ${IMAGE}"
           SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         else
-          echo "FAILED: ${IMAGE} (exit code: ${SCAN_RESULT})"
+          echo "  ✗ FAILED: ${IMAGE} (exit code: ${SCAN_RESULT})"
+          
+          # Log some debug info for failures
+          echo "  Debug info:"
+          echo "    - Image: ${IMAGE}"
+          echo "    - Project: ${PROJECT_NAME}"
+          echo "    - Version: ${VERSION_NAME}"
+          echo "    - Parent: ${PARENT_PROJECT}:${PARENT_VERSION}"
         fi
       else
-        echo "Failed to download: ${IMAGE}"
+        echo "  ✗ Failed to download after 3 attempts: ${IMAGE}"
       fi
-    done
 
-    echo "BDSC Container scanning completed"
-    echo "Check Black Duck UI: ${PARENT_PROJECT} -> Child Projects -> Components -> Layers"
+      # Clean up any remaining temporary files
+      rm -f /tmp/container-images/${PROJECT_NAME}-${TOTAL_IMAGES}.*
+
+    done < /tmp/images.txt
+
+    echo ""
+    echo "=== BDSC Container Scanning Summary ==="
+    echo "Total images processed: ${TOTAL_IMAGES}"
+    echo "Successful scans: ${SUCCESS_COUNT}"
+    echo "Failed scans: $((TOTAL_IMAGES - SUCCESS_COUNT))"
+    echo "Success rate: $(( SUCCESS_COUNT * 100 / TOTAL_IMAGES ))%" 2>/dev/null || echo "Success rate: N/A"
+    echo ""
+    echo "Black Duck Project Details:"
+    echo "  Parent Project: ${PARENT_PROJECT}"
+    echo "  Parent Version: ${PARENT_VERSION}"
+    echo "  Project Tier: ${PROJECT_TIER}"
+    echo ""
+    echo "Check Black Duck UI at: ${BD_URL}"
+    echo "Navigate to: Projects -> ${PARENT_PROJECT} -> Child Projects"
+    echo ""
+
+    # Annotate workloads if requested
+    if [ "${ANNOTATE_WORKLOADS}" = "true" ]; then
+      echo "Annotating workloads..."
+      WORKLOAD_COUNT=0
+      kubectl -n "${TARGET_NS}" get deployments,statefulsets,daemonsets -l "${LABEL_SELECTOR}" -o name | while read -r WORKLOAD; do
+        if [ -n "${WORKLOAD}" ]; then
+          kubectl -n "${TARGET_NS}" annotate "${WORKLOAD}" "${ANNO_KEY}=${ANNO_VALUE}" --overwrite
+          echo "Annotated ${WORKLOAD}"
+          WORKLOAD_COUNT=$((WORKLOAD_COUNT + 1))
+        fi
+      done
+      echo "Annotated ${WORKLOAD_COUNT} workloads"
+    fi
+
+    # Final cleanup
+    rm -rf /tmp/container-images
+    rm -f /tmp/images.txt
+
+    echo ""
+    if [ $SUCCESS_COUNT -eq $TOTAL_IMAGES ] && [ $TOTAL_IMAGES -gt 0 ]; then
+      echo "🎉 BDSC Container scanning completed successfully! All images scanned."
+      exit 0
+    elif [ $SUCCESS_COUNT -gt 0 ]; then
+      echo "⚠️  BDSC Container scanning completed with some failures. ${SUCCESS_COUNT}/${TOTAL_IMAGES} successful."
+      exit 0
+    else
+      echo "❌ BDSC Container scanning failed. No images were successfully scanned."
+      exit 1
+    fi
