@@ -12,13 +12,17 @@ blackduck:
   tokenSecretName: "blackduck-creds"   # Secret will live in the target namespace
   trustCert: true                      # Set based on your cert setup
 
-dockerInspector:
-  install: true                        # Install our own working image inspector
-  replicas: 1
-  image: "blackducksoftware/blackduck-imageinspector-ubuntu:6.2.1"
-  serviceUrl: ""                       # Will auto-generate
-  sharedPvcName: "bd-imageinspector-shared"
-  createSharedPvc: false               # PVC already exists and is working
+# Remove dockerInspector configuration entirely
+# dockerInspector:
+#   install: true
+#   replicas: 1
+#   etc...
+
+# Add container scanner configuration
+containerScanner:
+  enabled: true
+  # Container Scanner will use the existing Black Duck instance
+  # No additional services needed
 
 detect:
   policyFailSeverities: "CRITICAL,BLOCKER"
