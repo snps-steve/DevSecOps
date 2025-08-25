@@ -8,13 +8,12 @@ data:
     #!/bin/sh
     set -euo pipefail
 
-    echo "[selfscan] Starting Black Duck selfscan job"
+    echo "[selfscan] Starting Black Duck selfscan job with Container Scanner"
     echo "[selfscan] Target namespace ${TARGET_NS}"
     echo "[selfscan] Label selector ${LABEL_SELECTOR}"
-    echo "[selfscan] Inspector URL ${INSPECTOR_URL}"
 
     echo "[selfscan] Installing tools..."
-    apk add --no-cache curl jq skopeo openjdk17-jre coreutils bash >/dev/null 2>&1
+    apk add --no-cache curl jq docker skopeo openjdk17-jre coreutils bash >/dev/null 2>&1
 
     echo "[selfscan] Installing kubectl..."
     KV=$(curl -sSL https://dl.k8s.io/release/stable.txt)
@@ -23,11 +22,11 @@ data:
 
     # Verify the secret exists and has the expected keys
     echo "[selfscan] Verifying Black Duck credentials secret..."
-    if kubectl get secret blackduck-creds -n ${TARGET_NS} >/dev/null 2>&1; then
-      echo "[selfscan] Secret 'blackduck-creds' exists"
-      kubectl get secret blackduck-creds -n ${TARGET_NS} -o jsonpath='{.data}' | jq 'keys'
+    if kubectl get secret ${BD_TOKEN_SECRET} -n ${TARGET_NS} >/dev/null 2>&1; then
+      echo "[selfscan] Secret '${BD_TOKEN_SECRET}' exists"
+      kubectl get secret ${BD_TOKEN_SECRET} -n ${TARGET_NS} -o jsonpath='{.data}' | jq 'keys'
     else
-      echo "[selfscan] ERROR: Secret 'blackduck-creds' not found in namespace ${TARGET_NS}"
+      echo "[selfscan] ERROR: Secret '${BD_TOKEN_SECRET}' not found in namespace ${TARGET_NS}"
       exit 1
     fi
 
@@ -54,32 +53,7 @@ data:
       fi
     done
 
-    echo "[selfscan] Waiting for Image Inspector service ${INSPECTOR_URL}"
-    for i in $(seq 1 30); do
-      if curl -sk --max-time 5 "${INSPECTOR_URL}/health" >/dev/null 2>&1; then
-        echo "[selfscan] Image Inspector is ready"
-        break
-      fi
-      echo "[selfscan] Image Inspector not ready yet, retrying in 10s..."
-      sleep 10
-      if [ $i -eq 30 ]; then
-        echo "[selfscan] ERROR Image Inspector is not ready after 5 minutes"
-        exit 1
-      fi
-    done
-
-    # Debug environment variables
-    echo "[selfscan] Debugging environment variables..."
-    echo "[selfscan] BD_URL is set: $([ -n "${BD_URL}" ] && echo "YES" || echo "NO")"
-    echo "[selfscan] BD_TOKEN is set: $([ -n "${BD_TOKEN}" ] && echo "YES" || echo "NO")"
-    if [ -n "${BD_URL}" ]; then
-      echo "[selfscan] BD_URL length: ${#BD_URL} characters"
-    fi
-    if [ -n "${BD_TOKEN}" ]; then
-      echo "[selfscan] BD_TOKEN length: ${#BD_TOKEN} characters"
-    fi
-
-    # Download Detect BEFORE using it
+    # Download Detect
     DETECT=/tmp/detect.sh
     echo "[selfscan] Downloading Black Duck Detect..."
     curl -fsSL https://detect.blackduck.com/detect10.sh -o "${DETECT}"
@@ -109,11 +83,10 @@ data:
     echo "[selfscan] Found images"
     echo "${IMAGES}" | sed 's/^/  - /'
 
-    # Derive parent project/version with better logic
+    # Derive parent project/version
     if [ -n "${DETECT_PARENT_PROJECT}" ]; then
       PARENT_PROJECT="${DETECT_PARENT_PROJECT}"
     else
-      # Try to extract from label selector
       PARENT_PROJECT=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app=\([^,]*\).*/\1/p' | head -1)
       if [ -z "${PARENT_PROJECT}" ]; then
         PARENT_PROJECT=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app\.kubernetes\.io\/name=\([^,]*\).*/\1/p' | head -1)
@@ -126,7 +99,6 @@ data:
     if [ -n "${DETECT_PARENT_VERSION}" ]; then
       PARENT_VERSION="${DETECT_PARENT_VERSION}"
     else
-      # Try multiple label patterns for version
       PARENT_VERSION=$(echo "${PODS_JSON}" | jq -r '.items[0].metadata.labels.version // .items[0].metadata.labels["app.kubernetes.io/version"] // empty' 2>/dev/null || echo "")
       if [ -z "${PARENT_VERSION}" ]; then
         PARENT_VERSION="current"
@@ -136,25 +108,6 @@ data:
     echo "[selfscan] Parent project ${PARENT_PROJECT}"
     echo "[selfscan] Parent version ${PARENT_VERSION}"
 
-    # Create base Detect properties using echo instead of heredoc
-    echo "blackduck.url=${BD_URL}" > /tmp/base.props
-    echo "blackduck.api.token=${BD_TOKEN}" >> /tmp/base.props
-    echo "blackduck.trust.cert=${TRUST_CERT}" >> /tmp/base.props
-    echo "detect.wait.for.results=true" >> /tmp/base.props
-    echo "detect.cleanup=false" >> /tmp/base.props
-    echo "detect.tools=DOCKER" >> /tmp/base.props
-    echo "detect.docker.passthrough.imageinspector.service.url=${INSPECTOR_URL}" >> /tmp/base.props
-    echo "detect.docker.passthrough.imageinspector.service.start=false" >> /tmp/base.props
-    echo "detect.docker.passthrough.shared.dir.path.local=${SHARED_LOCAL}" >> /tmp/base.props
-    echo "detect.docker.passthrough.shared.dir.path.imageinspector=${SHARED_REMOTE}" >> /tmp/base.props
-    echo "logging.level.com.synopsys.integration=DEBUG" >> /tmp/base.props
-
-    if [ -n "${PROJECT_GROUP}" ]; then
-      echo "detect.project.group.name=${PROJECT_GROUP}" >> /tmp/base.props
-    fi
-
-    # Ensure shared directory exists
-    mkdir -p "${SHARED_LOCAL}/target"
     FAILED_IMAGES=""
     SUCCESS_COUNT=0
     TOTAL_COUNT=0
@@ -172,81 +125,46 @@ data:
 
       # Determine version name
       if echo "${IMAGE}" | grep -q '@sha256'; then
-        # Image specified by digest
         DIGEST=$(echo "${IMAGE}" | cut -d@ -f2)
         SHORT_DIGEST=$(echo "${DIGEST}" | cut -c8-19)
         VERSION_NAME="digest-${SHORT_DIGEST}"
       elif echo "${IMAGE}" | grep -q ':'; then
-        # Image specified by tag
         TAG=$(echo "${IMAGE}" | cut -d: -f2- | cut -d@ -f1)
         VERSION_NAME="${TAG}"
       else
-        # No tag specified, assume latest
         VERSION_NAME="latest"
       fi
 
       echo "[selfscan] Project ${MICROSVC} Version ${VERSION_NAME}"
 
-      # Create image archive
-      TAR="${SHARED_LOCAL}/target/${MICROSVC}-${VERSION_NAME}.tar"
-      echo "[selfscan] Saving image to ${TAR}..."
-
-      if ! skopeo copy --retry-times=3 "docker://${IMAGE}" "docker-archive:${TAR}:${IMAGE}"; then
-        echo "[selfscan][ERROR] Failed to save image ${IMAGE}"
-        FAILED_IMAGES="${FAILED_IMAGES} ${IMAGE}"
-        continue
-      fi
-
-      # Create Detect run properties using echo instead of heredoc
-      echo "detect.project.parent.name=${PARENT_PROJECT}" > /tmp/run.props
-      echo "detect.project.parent.version.name=${PARENT_VERSION}" >> /tmp/run.props
-      echo "detect.project.name=${MICROSVC}" >> /tmp/run.props
-      echo "detect.project.version.name=${VERSION_NAME}" >> /tmp/run.props
-      echo "detect.docker.tar=${TAR}" >> /tmp/run.props
-      echo "detect.policy.check.fail.on.severities=${POLICY_FAIL_SEVS}" >> /tmp/run.props
-
-      # Combine properties
-      cat /tmp/base.props /tmp/run.props > /tmp/detect.props
-
-      # Debug the detect.props file content
-      echo "[selfscan] DEBUG: Contents of detect.props file:"
-      cat /tmp/detect.props
-      echo "[selfscan] DEBUG: End of detect.props file"
-
-      echo "[selfscan] Running Detect for ${MICROSVC} ${VERSION_NAME}..."
+      echo "[selfscan] Running Container Scanner for ${MICROSVC} ${VERSION_NAME}..."
       set +e
-      # Try running Detect with individual parameters instead of properties file
+      
+      # Use Container Scanner instead of Docker Inspector
       bash "${DETECT}" \
         --blackduck.url="${BD_URL}" \
         --blackduck.api.token="${BD_TOKEN}" \
         --blackduck.trust.cert="${TRUST_CERT}" \
         --detect.wait.for.results=true \
         --detect.cleanup=false \
-        --detect.tools=DOCKER \
-        --detect.docker.passthrough.imageinspector.service.url="${INSPECTOR_URL}" \
-        --detect.docker.passthrough.imageinspector.service.start=false \
-        --detect.docker.passthrough.shared.dir.path.local="${SHARED_LOCAL}" \
-        --detect.docker.passthrough.shared.dir.path.imageinspector="${SHARED_REMOTE}" \
+        --detect.tools=CONTAINER_SCAN \
+        --detect.container.scan.image.id="${IMAGE}" \
         --detect.project.parent.name="${PARENT_PROJECT}" \
         --detect.project.parent.version.name="${PARENT_VERSION}" \
         --detect.project.name="${MICROSVC}" \
         --detect.project.version.name="${VERSION_NAME}" \
-        --detect.docker.tar="${TAR}" \
         --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVS}" \
-        --logging.level.com.synopsys.integration=DEBUG
+        --logging.level.com.synopsys.integration=INFO
       DETECT_RC=$?
       set -e
 
       if [ $DETECT_RC -ne 0 ]; then
-        echo "[selfscan][FAIL] Detect failed with exit code ${DETECT_RC} for ${IMAGE}"
+        echo "[selfscan][FAIL] Container Scanner failed with exit code ${DETECT_RC} for ${IMAGE}"
         FAILED_IMAGES="${FAILED_IMAGES} ${IMAGE}"
       else
         echo "[selfscan][PASS] Successfully scanned ${IMAGE}"
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
       fi
-
-      # Clean up the tar file to save space
-      rm -f "${TAR}"
     done
 
     echo "=============================================="
