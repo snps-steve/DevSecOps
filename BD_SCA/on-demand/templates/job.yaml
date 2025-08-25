@@ -18,8 +18,8 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
     helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 spec:
-  backoffLimit: 2  # Allow some retries for transient failures
-  ttlSecondsAfterFinished: 900
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600  # Clean up after 1 hour
   template:
     spec:
       serviceAccountName: {{ include "selfscan.sa" . }}
@@ -34,17 +34,16 @@ spec:
           secret:
             secretName: {{ .Values.registry.secretName }}
         {{- end }}
-        # Add docker socket for Container Scanner
+        # Docker socket for Container Scanner
         - name: docker-socket
           hostPath:
             path: /var/run/docker.sock
             type: Socket
       containers:
-        - name: run
+        - name: scanner
           image: {{ default "alpine:3.19" .Values.runner.image | quote }}
-          # Run as privileged to access docker socket
           securityContext:
-            privileged: true
+            privileged: true  # Required for docker socket access
           volumeMounts:
             - name: script
               mountPath: /opt/selfscan
@@ -67,19 +66,17 @@ spec:
                 secretKeyRef:
                   name: {{ default "blackduck-creds" .Values.blackduck.tokenSecretName | quote }}
                   key: token
-            - name: BD_TOKEN_SECRET
-              value: {{ default "blackduck-creds" .Values.blackduck.tokenSecretName | quote }}
             - name: TARGET_NS
               value: {{ $ns | quote }}
             - name: LABEL_SELECTOR
               value: {{ $selector | quote }}
-            - name: ANNOTATE
+            - name: ANNOTATE_WORKLOADS
               value: {{ ternary "true" "false" $annotate | quote }}
             - name: ANNO_KEY
               value: {{ $annoKey | quote }}
             - name: ANNO_VALUE
               value: {{ $annoVal | quote }}
-            - name: POLICY_FAIL_SEVS
+            - name: POLICY_FAIL_SEVERITIES
               value: {{ default "CRITICAL,BLOCKER" .Values.detect.policyFailSeverities | quote }}
             - name: TRUST_CERT
               value: {{ ternary "true" "false" $trust | quote }}
@@ -93,7 +90,6 @@ spec:
             - name: REGISTRY_SECRET_PATH
               value: "/tmp/registry-creds"
             {{- end }}
-          # Add resource limits
           resources:
             requests:
               memory: "256Mi"
@@ -104,4 +100,4 @@ spec:
           command:
             - /bin/sh
             - -c
-            - exec /opt/selfscan/run.sh
+            - exec /opt/selfscan/scan.sh
