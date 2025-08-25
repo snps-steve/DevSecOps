@@ -22,7 +22,7 @@ registry:
   secretName: ""                       # Optional: registry auth secret name
 
 runner:
-  image: "docker:24-dind"              # Docker-in-Docker image for BDSC container scanning
+  image: "alpine:3.19"                 # MicroK8s-compatible base image for BDSC container scanning
 
 # Docker Inspector configuration (if using standalone Docker Inspector)
 dockerInspector:
