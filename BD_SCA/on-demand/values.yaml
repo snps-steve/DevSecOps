@@ -1,7 +1,7 @@
 target:
-  namespace: "bd"                                         # Black Duck namespace
-  labelSelector: "app.kubernetes.io/instance=blackduck"   # Selector for Black Duck pods
-  annotateWorkloads: true                                 # Annotate scanned workloads
+  namespace: "your-app-namespace"                         # Change to your application namespace
+  labelSelector: "app.kubernetes.io/name=your-app"       # Change to match YOUR applications
+  annotateWorkloads: true
   annotateKey: "blackduck.synopsys.com/policy"
   annotateValueOnPass: "pass"
 
@@ -13,18 +13,40 @@ blackduck:
 
 detect:
   policyFailSeverities: "CRITICAL,BLOCKER"
-  parentProject: ""                    # Optional: override parent project name
-  parentVersion: ""                    # Optional: override parent version
+  parentProject: "kubernetes-production-apps"             # Meaningful parent project name
+  parentVersion: "2024-q4"                               # Version identifier
   projectGroupName: ""                 # Optional: Black Duck project group/application ID
-  projectTier: "3"                     # Project tier (1=Critical, 2=High, 3=Medium, 4=Low)
+  projectTier: "2"                     # Project tier (1=Critical, 2=High, 3=Medium, 4=Low)
+
+  # Additional BDSC-specific settings
+  containerScan:
+    enabled: true                      # Enable container scanning
+    waitForResults: true               # Wait for scan completion
+    cleanupAfterScan: false           # Keep scan artifacts for debugging
 
 registry:
   secretName: ""                       # Optional: registry auth secret name
 
 runner:
-  image: "alpine:3.19"                 # MicroK8s-compatible base image for BDSC container scanning
+  image: "alpine:3.19"                 # Base image for scanning container
 
-# Docker Inspector configuration (if using standalone Docker Inspector)
+  # Enhanced resource limits for the scanning job
+  resources:
+    requests:
+      memory: "2Gi"                    # Increased from default
+      cpu: "500m"
+    limits:
+      memory: "8Gi"                    # Increased for larger images
+      cpu: "4"                         # More CPU for faster processing
+      ephemeralStorage: "50Gi"         # Disk space for image downloads
+
+# Enhanced logging and debugging
+debug:
+  enabled: false                       # Set to true for verbose debugging
+  keepTempFiles: false                # Keep temporary files for debugging
+  logLevel: "INFO"                    # DEBUG, INFO, WARN, ERROR
+
+# Docker Inspector configuration (optional - for traditional Docker Inspector mode)
 dockerInspector:
   install: false                       # Set to true if you want dedicated Docker Inspector services
   replicas: 1
