@@ -61,11 +61,11 @@ data:
 
     if [ -z "${IMAGES}" ]; then
       echo "❌ No container images found with selector '${LABEL_SELECTOR}' in namespace '${TARGET_NS}'"
-      
+
       # Debug: show what pods were found
       echo "Debug: Found pods:"
       echo "${PODS_JSON}" | jq -r '.items[].metadata.name' || echo "None"
-      
+
       exit 0
     fi
 
@@ -97,7 +97,7 @@ data:
 
     # Create temp directory for image files
     mkdir -p /tmp/images
-    
+
     # Scan each image
     TOTAL_IMAGES=0
     SUCCESS_COUNT=0
@@ -133,18 +133,18 @@ data:
       # Download image using skopeo
       IMAGE_FILE="/tmp/images/${PROJECT_NAME}-${VERSION_NAME}.tar"
       echo "Downloading image to ${IMAGE_FILE}..."
-      
+
       if ! skopeo copy "docker://${IMAGE}" "docker-archive:${IMAGE_FILE}:${IMAGE}" --quiet; then
         echo "❌ Failed to download image: ${IMAGE}"
         FAILED_IMAGES="${FAILED_IMAGES} ${IMAGE}"
         continue
       fi
-      
+
       echo "✅ Image downloaded ($(du -sh ${IMAGE_FILE} | cut -f1))"
 
       # Run Binary Scanner on the downloaded image
       echo "Running Black Duck Binary Scanner..."
-      
+
       set +e  # Don't exit on scan failure
       bash /tmp/detect.sh \
         --blackduck.url="${BD_URL}" \
@@ -189,7 +189,7 @@ data:
     echo "SCAN SUMMARY"
     echo "=========================================="
     echo "Total images: ${TOTAL_IMAGES}"
-    
+
     # Check if we had any failures
     if [ -n "${FAILED_IMAGES}" ]; then
       FAILED_COUNT=$(echo "${FAILED_IMAGES}" | tr ',' '\n' | wc -l)
