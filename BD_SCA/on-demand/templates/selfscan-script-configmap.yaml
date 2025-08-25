@@ -9,7 +9,7 @@ data:
     set -euo pipefail
 
     echo "=========================================="
-    echo "Black Duck Container Scanner - On Demand"
+    echo "Black Duck Container Scanner - MicroK8s"
     echo "Using BDSC Container Scanning for Layer Analysis"
     echo "=========================================="
     echo "Target namespace: ${TARGET_NS}"
@@ -18,20 +18,17 @@ data:
 
     # Install required tools
     echo "Installing tools..."
-    apk add --no-cache curl jq bash coreutils docker openjdk17-jre >/dev/null 2>&1
+    apk add --no-cache curl jq bash coreutils openjdk17-jre >/dev/null 2>&1
 
     echo "Installing kubectl..."
     curl -fsSL -o /usr/local/bin/kubectl \
       "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
     chmod +x /usr/local/bin/kubectl
-    echo "✅ Tools installed"
 
-    # Start Docker daemon for container scanning
-    echo "Starting Docker daemon..."
-    dockerd-entrypoint.sh dockerd --host=unix:///var/run/docker.sock --host=tcp://0.0.0.0:2376 &
-    DOCKER_PID=$!
-    sleep 5
-    echo "✅ Docker daemon started"
+    # Install microk8s-compatible container tools
+    echo "Installing container tools for MicroK8s..."
+    apk add --no-cache skopeo >/dev/null 2>&1
+    echo "✅ Tools installed"
 
     # Configure registry authentication if provided
     if [ -n "${REGISTRY_SECRET_PATH:-}" ] && [ -d "${REGISTRY_SECRET_PATH}" ]; then
@@ -98,6 +95,9 @@ data:
     echo "Parent project: ${PARENT_PROJECT}"
     echo "Parent version: ${PARENT_VERSION}"
 
+    # Create temp directory for container images
+    mkdir -p /tmp/container-images
+
     # Step 1: Create parent project if it doesn't exist
     echo ""
     echo "=========================================="
@@ -107,37 +107,38 @@ data:
     # Create a minimal parent project structure
     mkdir -p /tmp/parent-project
     cat > /tmp/parent-project/README.md << EOF
-    # ${PARENT_PROJECT}
+# ${PARENT_PROJECT}
 
-    This is the parent project for Kubernetes workload container scanning.
-    Child projects represent individual container images within this deployment.
+This is the parent project for Kubernetes workload container scanning.
+Child projects represent individual container images within this deployment.
 
-    ## Container Images Scanned:
-    $(echo "${IMAGES}" | sed 's/^/- /')
+## Container Images Scanned:
+$(echo "${IMAGES}" | sed 's/^/- /')
 
-    ## Scan Details:
-    - Namespace: ${TARGET_NS}
-    - Selector: ${LABEL_SELECTOR}
-    - Scan Method: BDSC Container Scanning
-    - Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-    EOF
+## Scan Details:
+- Namespace: ${TARGET_NS}
+- Selector: ${LABEL_SELECTOR}
+- Scan Method: BDSC Container Scanning
+- Platform: MicroK8s
+- Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
 
     # Create a simple package.json to make it a valid project for Detect
     cat > /tmp/parent-project/package.json << EOF
-    {
-      "name": "$(echo ${PARENT_PROJECT} | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')",
-      "version": "${PARENT_VERSION}",
-      "description": "Kubernetes workload parent project for container scanning",
-      "dependencies": {},
-      "kubernetes": {
-        "namespace": "${TARGET_NS}",
-        "selector": "${LABEL_SELECTOR}",
-        "containers": [
-    $(echo "${IMAGES}" | sed 's/^/      "/' | sed 's/$/"/' | paste -sd, -)
-        ]
-      }
-    }
-    EOF
+{
+  "name": "$(echo ${PARENT_PROJECT} | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')",
+  "version": "${PARENT_VERSION}",
+  "description": "Kubernetes workload parent project for container scanning",
+  "dependencies": {},
+  "kubernetes": {
+    "namespace": "${TARGET_NS}",
+    "selector": "${LABEL_SELECTOR}",
+    "containers": [
+$(echo "${IMAGES}" | sed 's/^/      "/' | sed 's/$/"/' | paste -sd, -)
+    ]
+  }
+}
+EOF
 
     echo "Creating parent project: ${PARENT_PROJECT} v${PARENT_VERSION}"
     cd /tmp/parent-project
@@ -163,7 +164,7 @@ data:
       echo "✅ Parent project created/updated successfully"
     else
       echo "⚠️  Parent project creation had issues (exit code: ${PARENT_RESULT})"
-      echo "Continuing with container scans..."
+      echo "Continuing with BDSC container scans..."
     fi
 
     # Step 2: Scan each container image using BDSC Container Scanning
@@ -182,7 +183,7 @@ data:
 
       echo ""
       echo "=========================================="
-      echo "Container scanning ${TOTAL_IMAGES}: ${IMAGE}"
+      echo "BDSC Container scanning ${TOTAL_IMAGES}: ${IMAGE}"
       echo "=========================================="
 
       # Extract project name from image
@@ -209,17 +210,19 @@ data:
       mkdir -p "${SCAN_DIR}"
       cd "${SCAN_DIR}"
 
-      # Pull image for container scanning
-      echo "Pulling image for BDSC container analysis..."
-      if ! docker pull "${IMAGE}"; then
-        echo "❌ Failed to pull image: ${IMAGE}"
+      # For MicroK8s: Download image as OCI archive using skopeo
+      IMAGE_FILE="/tmp/container-images/${PROJECT_NAME}-${VERSION_NAME}.tar"
+      echo "Downloading container image for BDSC analysis..."
+      
+      if ! skopeo copy "docker://${IMAGE}" "docker-archive:${IMAGE_FILE}:${IMAGE}" --quiet; then
+        echo "❌ Failed to download image: ${IMAGE}"
         FAILED_IMAGES="${FAILED_IMAGES} ${IMAGE}"
         continue
       fi
-      echo "✅ Image pulled successfully"
+      echo "✅ Image downloaded ($(du -sh ${IMAGE_FILE} | cut -f1))"
 
       # Run Detect with BDSC Container Scanning
-      # This uses the CONTAINER_SCAN detector which provides layer-by-layer analysis
+      # CRITICAL: Using CONTAINER_SCAN for layer-by-layer analysis
       echo "Running BDSC Container Scanner for layer-by-layer analysis..."
 
       set +e  # Don't exit on scan failure
@@ -230,7 +233,7 @@ data:
         --detect.wait.for.results=true \
         --detect.cleanup=false \
         --detect.tools=CONTAINER_SCAN \
-        --detect.container.scan.image.id="${IMAGE}" \
+        --detect.container.scan.file.path="${IMAGE_FILE}" \
         --detect.project.parent.name="${PARENT_PROJECT}" \
         --detect.project.parent.version.name="${PARENT_VERSION}" \
         --detect.project.name="${PROJECT_NAME}" \
@@ -239,13 +242,13 @@ data:
         --detect.project.application.id="${PROJECT_GROUP}" \
         --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVERITIES}" \
         --detect.project.clone.categories=COMPONENT_DATA,VULN_DATA \
-        --logging.level.com.synopsys.integration=INFO
+        --logging.level.com.synopsys.integration=DEBUG
 
       SCAN_RESULT=$?
       set -e
 
-      # Clean up Docker image to save space
-      docker rmi "${IMAGE}" 2>/dev/null || true
+      # Clean up the image file to save space
+      rm -f "${IMAGE_FILE}"
 
       if [ $SCAN_RESULT -eq 0 ]; then
         echo "✅ SUCCESS: ${IMAGE}"
@@ -264,9 +267,6 @@ data:
       rm -rf "${SCAN_DIR}"
 
     done
-
-    # Clean up Docker daemon
-    kill $DOCKER_PID 2>/dev/null || true
 
     # Final results
     TOTAL_IMAGES=$(echo "${IMAGES}" | wc -l)
@@ -291,7 +291,7 @@ data:
       echo "Successful scans: ${TOTAL_IMAGES}"
       echo "Failed scans: 0"
       echo ""
-      echo "✅ All container scans completed successfully!"
+      echo "✅ All BDSC container scans completed successfully!"
     fi
 
     # Annotate workloads if requested
@@ -306,6 +306,7 @@ data:
             "blackduck.synopsys.com/parent-version=${PARENT_VERSION}" \
             "blackduck.synopsys.com/scan-timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             "blackduck.synopsys.com/scan-method=bdsc-container-scan" \
+            "blackduck.synopsys.com/platform=microk8s" \
             --overwrite 2>/dev/null || true
           echo "✅ Annotated: ${RESOURCE}"
         done
@@ -316,3 +317,10 @@ data:
     echo "✅ BDSC Container scanning completed!"
     echo "Check Black Duck dashboard for layer-by-layer component analysis."
     echo "Navigate to: ${PARENT_PROJECT} → Child Projects → [Container] → Components → Layers"
+    echo ""
+    echo "Expected UI structure:"
+    echo "📁 ${PARENT_PROJECT} (v${PARENT_VERSION})"
+    echo "├── 📋 Components (aggregated view)"
+    echo "├── 📊 Vulnerabilities (rolled up)"
+    echo "└── 📁 Child Projects:"
+    echo "${IMAGES}" | sed 's/.*\///g' | sed 's/:.*//g' | sed 's/^/    ├── 📦 /' | sed 's/$/ → Components → Layers/'
