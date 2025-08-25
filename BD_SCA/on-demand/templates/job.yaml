@@ -1,10 +1,5 @@
 {{- $ns := default .Release.Namespace .Values.target.namespace -}}
 {{- $selector := default "app=blackduck" .Values.target.labelSelector -}}
-{{- $inspectorURL := .Values.dockerInspector.serviceUrl -}}
-{{- if not $inspectorURL -}}
-{{-   $inspectorURL = printf "http://bd-imageinspector-ubuntu.%s.svc.cluster.local:9002" $ns -}}
-{{- end -}}
-{{- $sharedPVC := default "bd-imageinspector-shared" .Values.dockerInspector.sharedPvcName -}}
 {{- $annoKey := default "blackduck.synopsys.com/policy" .Values.target.annotateKey -}}
 {{- $annoVal := default "pass" .Values.target.annotateValueOnPass -}}
 
@@ -30,9 +25,6 @@ spec:
       serviceAccountName: {{ include "selfscan.sa" . }}
       restartPolicy: Never
       volumes:
-        - name: shared
-          persistentVolumeClaim:
-            claimName: {{ $sharedPVC | quote }}
         - name: script
           configMap:
             name: {{ include "selfscan.name" . }}-script
@@ -42,12 +34,18 @@ spec:
           secret:
             secretName: {{ .Values.registry.secretName }}
         {{- end }}
+        # Add docker socket for Container Scanner
+        - name: docker-socket
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
       containers:
         - name: run
           image: {{ default "alpine:3.19" .Values.runner.image | quote }}
+          # Run as privileged to access docker socket
+          securityContext:
+            privileged: true
           volumeMounts:
-            - name: shared
-              mountPath: /shared
             - name: script
               mountPath: /opt/selfscan
               readOnly: true
@@ -56,6 +54,8 @@ spec:
               mountPath: /tmp/registry-creds
               readOnly: true
             {{- end }}
+            - name: docker-socket
+              mountPath: /var/run/docker.sock
           env:
             - name: BD_URL
               valueFrom:
@@ -67,6 +67,8 @@ spec:
                 secretKeyRef:
                   name: {{ default "blackduck-creds" .Values.blackduck.tokenSecretName | quote }}
                   key: token
+            - name: BD_TOKEN_SECRET
+              value: {{ default "blackduck-creds" .Values.blackduck.tokenSecretName | quote }}
             - name: TARGET_NS
               value: {{ $ns | quote }}
             - name: LABEL_SELECTOR
@@ -81,12 +83,6 @@ spec:
               value: {{ default "CRITICAL,BLOCKER" .Values.detect.policyFailSeverities | quote }}
             - name: TRUST_CERT
               value: {{ ternary "true" "false" $trust | quote }}
-            - name: INSPECTOR_URL
-              value: {{ $inspectorURL | quote }}
-            - name: SHARED_LOCAL
-              value: "/shared"
-            - name: SHARED_REMOTE
-              value: "/opt/blackduck/blackduck-imageinspector/shared"
             - name: DETECT_PARENT_PROJECT
               value: {{ default "" .Values.detect.parentProject | quote }}
             - name: DETECT_PARENT_VERSION
@@ -103,8 +99,8 @@ spec:
               memory: "256Mi"
               cpu: "100m"
             limits:
-              memory: "1Gi"
-              cpu: "500m"
+              memory: "2Gi"
+              cpu: "1"
           command:
             - /bin/sh
             - -c
