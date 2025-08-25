@@ -1,37 +1,24 @@
 target:
-  namespace: "bd"                                         # <-- BD namespace
-  labelSelector: "app.kubernetes.io/instance=blackduck"   # <-- BD release selector
-  annotateWorkloads: false                                # set true to annotate BD Deployments/STS/DS
+  namespace: "bd"                                         # Black Duck namespace
+  labelSelector: "app.kubernetes.io/instance=blackduck"   # Selector for Black Duck pods
+  annotateWorkloads: true                                 # Annotate scanned workloads
   annotateKey: "blackduck.synopsys.com/policy"
   annotateValueOnPass: "pass"
 
 blackduck:
-  url: ""                              # leave blank; we pull from Secret at runtime
-  token: ""                            # leave blank; we pull from Secret at runtime
-  createSecret: false                  # Secret already exists
-  tokenSecretName: "blackduck-creds"   # Secret will live in the target namespace
-  trustCert: true                      # Set based on your cert setup
-
-# Remove dockerInspector configuration entirely
-# dockerInspector:
-#   install: true
-#   replicas: 1
-#   etc...
-
-# Add container scanner configuration
-containerScanner:
-  enabled: true
-  # Container Scanner will use the existing Black Duck instance
-  # No additional services needed
+  url: ""                              # Leave blank - pulled from secret
+  token: ""                            # Leave blank - pulled from secret
+  tokenSecretName: "blackduck-creds"   # Secret containing Black Duck credentials
+  trustCert: true                      # Set to false if using proper SSL certs
 
 detect:
   policyFailSeverities: "CRITICAL,BLOCKER"
-  parentProject: ""
-  parentVersion: ""
-  projectGroupName: ""
+  parentProject: ""                    # Optional: override parent project name
+  parentVersion: ""                    # Optional: override parent version
+  projectGroupName: ""                 # Optional: Black Duck project group
 
 registry:
-  secretName: ""
+  secretName: ""                       # Optional: registry auth secret name
 
 runner:
-  image: "alpine:3.19"
+  image: "alpine:3.19"                 # Base image for scan job
