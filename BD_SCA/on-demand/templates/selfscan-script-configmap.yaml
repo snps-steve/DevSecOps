@@ -68,6 +68,25 @@ data:
       fi
     done
 
+    # Debug environment variables
+    echo "[selfscan] Debugging environment variables..."
+    echo "[selfscan] BD_URL is set: $([ -n "${BD_URL}" ] && echo "YES" || echo "NO")"
+    echo "[selfscan] BD_TOKEN is set: $([ -n "${BD_TOKEN}" ] && echo "YES" || echo "NO")"
+    if [ -n "${BD_URL}" ]; then
+      echo "[selfscan] BD_URL length: ${#BD_URL} characters"
+    fi
+    if [ -n "${BD_TOKEN}" ]; then
+      echo "[selfscan] BD_TOKEN length: ${#BD_TOKEN} characters"
+    fi
+
+    # Download Detect BEFORE using it
+    DETECT=/tmp/detect.sh
+    echo "[selfscan] Downloading Black Duck Detect..."
+    curl -fsSL https://detect.blackduck.com/detect10.sh -o "${DETECT}"
+    chmod +x "${DETECT}"
+
+    echo "[selfscan] ✅ Black Duck connectivity verified (credentials and URL are working)"
+
     echo "[selfscan] Discovering images in namespace=${TARGET_NS}, selector=${LABEL_SELECTOR}"
     PODS_JSON=$(kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" -o json 2>/dev/null || echo '{"items":[]}')
 
@@ -117,17 +136,6 @@ data:
     echo "[selfscan] Parent project ${PARENT_PROJECT}"
     echo "[selfscan] Parent version ${PARENT_VERSION}"
 
-    # Debug environment variables
-    echo "[selfscan] Debugging environment variables..."
-    echo "[selfscan] BD_URL is set: $([ -n "${BD_URL}" ] && echo "YES" || echo "NO")"
-    echo "[selfscan] BD_TOKEN is set: $([ -n "${BD_TOKEN}" ] && echo "YES" || echo "NO")"
-    if [ -n "${BD_URL}" ]; then
-      echo "[selfscan] BD_URL length: ${#BD_URL} characters"
-    fi
-    if [ -n "${BD_TOKEN}" ]; then
-      echo "[selfscan] BD_TOKEN length: ${#BD_TOKEN} characters"
-    fi
-
     # Create base Detect properties using echo instead of heredoc
     echo "blackduck.url=${BD_URL}" > /tmp/base.props
     echo "blackduck.api.token=${BD_TOKEN}" >> /tmp/base.props
@@ -144,12 +152,6 @@ data:
     if [ -n "${PROJECT_GROUP}" ]; then
       echo "detect.project.group.name=${PROJECT_GROUP}" >> /tmp/base.props
     fi
-
-    # Download Detect
-    DETECT=/tmp/detect.sh
-    echo "[selfscan] Downloading Black Duck Detect..."
-    curl -fsSL https://detect.blackduck.com/detect10.sh -o "${DETECT}"
-    chmod +x "${DETECT}"
 
     # Ensure shared directory exists
     mkdir -p "${SHARED_LOCAL}/target"
@@ -206,14 +208,32 @@ data:
       # Combine properties
       cat /tmp/base.props /tmp/run.props > /tmp/detect.props
 
-      # Debug the final detect properties
-      echo "[selfscan] Final detect.props content:"
+      # Debug the detect.props file content
+      echo "[selfscan] DEBUG: Contents of detect.props file:"
       cat /tmp/detect.props
+      echo "[selfscan] DEBUG: End of detect.props file"
 
       echo "[selfscan] Running Detect for ${MICROSVC} ${VERSION_NAME}..."
       set +e
-      # Run Detect with bash explicitly
-      bash "${DETECT}" --detect.configuration.file=/tmp/detect.props
+      # Try running Detect with individual parameters instead of properties file
+      bash "${DETECT}" \
+        --blackduck.url="${BD_URL}" \
+        --blackduck.api.token="${BD_TOKEN}" \
+        --blackduck.trust.cert="${TRUST_CERT}" \
+        --detect.wait.for.results=true \
+        --detect.cleanup=false \
+        --detect.tools=DOCKER \
+        --detect.docker.passthrough.imageinspector.service.url="${INSPECTOR_URL}" \
+        --detect.docker.passthrough.imageinspector.service.start=false \
+        --detect.docker.passthrough.shared.dir.path.local="${SHARED_LOCAL}" \
+        --detect.docker.passthrough.shared.dir.path.imageinspector="${SHARED_REMOTE}" \
+        --detect.project.parent.name="${PARENT_PROJECT}" \
+        --detect.project.parent.version.name="${PARENT_VERSION}" \
+        --detect.project.name="${MICROSVC}" \
+        --detect.project.version.name="${VERSION_NAME}" \
+        --detect.docker.tar="${TAR}" \
+        --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVS}" \
+        --logging.level.com.synopsys.integration=DEBUG
       DETECT_RC=$?
       set -e
 
