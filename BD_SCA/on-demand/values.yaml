@@ -1,6 +1,6 @@
 target:
-  namespace: "your-app-namespace"                         # Change to your application namespace
-  labelSelector: "app.kubernetes.io/name=your-app"       # Change to match YOUR applications
+  namespace: "bd"                                         # Black Duck namespace where the pods are
+  labelSelector: "app=blackduck"                         # Scan Black Duck's own containers for testing
   annotateWorkloads: true
   annotateKey: "blackduck.synopsys.com/policy"
   annotateValueOnPass: "pass"
@@ -13,11 +13,11 @@ blackduck:
 
 detect:
   policyFailSeverities: "CRITICAL,BLOCKER"
-  parentProject: "kubernetes-production-apps"             # Meaningful parent project name
-  parentVersion: "2024-q4"                               # Version identifier
-  projectGroupName: ""                 # Optional: Black Duck project group/application ID
+  parentProject: "blackduck-platform-containers"         # Meaningful name for testing
+  parentVersion: "2025.4.2"                             # Version matches your Black Duck version
+  projectGroupName: ""                 
   projectTier: "2"                     # Project tier (1=Critical, 2=High, 3=Medium, 4=Low)
-
+  
   # Additional BDSC-specific settings
   containerScan:
     enabled: true                      # Enable container scanning
@@ -29,7 +29,7 @@ registry:
 
 runner:
   image: "alpine:3.19"                 # Base image for scanning container
-
+  
   # Enhanced resource limits for the scanning job
   resources:
     requests:
