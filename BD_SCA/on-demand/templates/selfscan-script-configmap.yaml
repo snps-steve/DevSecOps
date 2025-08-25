@@ -4,12 +4,12 @@ metadata:
   name: {{ include "selfscan.name" . }}-script
   namespace: {{ .Values.target.namespace | default .Release.Namespace }}
 data:
-  scan.sh: |
+  binary-scan.sh: |
     #!/bin/sh
     set -euo pipefail
 
     echo "=========================================="
-    echo "Black Duck Container Scanner - On Demand"
+    echo "Black Duck Binary Scanner - On Demand"
     echo "=========================================="
     echo "Target namespace: ${TARGET_NS}"
     echo "Label selector: ${LABEL_SELECTOR}"
@@ -17,12 +17,13 @@ data:
 
     # Install required tools
     echo "Installing tools..."
-    apk add --no-cache curl jq docker openjdk17-jre bash coreutils >/dev/null 2>&1
+    apk add --no-cache curl jq bash coreutils skopeo openjdk17-jre >/dev/null 2>&1
 
     echo "Installing kubectl..."
     curl -fsSL -o /usr/local/bin/kubectl \
       "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
     chmod +x /usr/local/bin/kubectl
+    echo "✅ Tools installed"
 
     # Configure registry authentication if provided
     if [ -n "${REGISTRY_SECRET_PATH:-}" ] && [ -d "${REGISTRY_SECRET_PATH}" ]; then
@@ -30,13 +31,14 @@ data:
       mkdir -p ~/.docker
       if [ -f "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ]; then
         cp "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ~/.docker/config.json
+        echo "✅ Registry authentication configured"
       fi
     fi
 
     # Test Black Duck connectivity
     echo "Testing Black Duck connectivity..."
     if ! curl -sk --max-time 10 "${BD_URL}/api/current-version" >/dev/null 2>&1; then
-      echo "ERROR: Cannot reach Black Duck at ${BD_URL}"
+      echo "❌ Cannot reach Black Duck at ${BD_URL}"
       exit 1
     fi
     echo "✅ Black Duck is reachable"
@@ -58,11 +60,16 @@ data:
       ] | map(select(. != null and . != "")) | unique | .[]' 2>/dev/null || echo "")
 
     if [ -z "${IMAGES}" ]; then
-      echo "No container images found with selector '${LABEL_SELECTOR}' in namespace '${TARGET_NS}'"
+      echo "❌ No container images found with selector '${LABEL_SELECTOR}' in namespace '${TARGET_NS}'"
+      
+      # Debug: show what pods were found
+      echo "Debug: Found pods:"
+      echo "${PODS_JSON}" | jq -r '.items[].metadata.name' || echo "None"
+      
       exit 0
     fi
 
-    echo "Found images:"
+    echo "✅ Found images:"
     echo "${IMAGES}" | sed 's/^/  - /'
 
     # Extract parent project and version from pods
@@ -88,6 +95,9 @@ data:
     echo "Parent project: ${PARENT_PROJECT}"
     echo "Parent version: ${PARENT_VERSION}"
 
+    # Create temp directory for image files
+    mkdir -p /tmp/images
+    
     # Scan each image
     TOTAL_IMAGES=0
     SUCCESS_COUNT=0
@@ -120,8 +130,20 @@ data:
       echo "Project name: ${PROJECT_NAME}"
       echo "Version: ${VERSION_NAME}"
 
-      # Run Container Scanner
-      echo "Running Black Duck Container Scanner..."
+      # Download image using skopeo
+      IMAGE_FILE="/tmp/images/${PROJECT_NAME}-${VERSION_NAME}.tar"
+      echo "Downloading image to ${IMAGE_FILE}..."
+      
+      if ! skopeo copy "docker://${IMAGE}" "docker-archive:${IMAGE_FILE}:${IMAGE}" --quiet; then
+        echo "❌ Failed to download image: ${IMAGE}"
+        FAILED_IMAGES="${FAILED_IMAGES} ${IMAGE}"
+        continue
+      fi
+      
+      echo "✅ Image downloaded ($(du -sh ${IMAGE_FILE} | cut -f1))"
+
+      # Run Binary Scanner on the downloaded image
+      echo "Running Black Duck Binary Scanner..."
       
       set +e  # Don't exit on scan failure
       bash /tmp/detect.sh \
@@ -130,8 +152,8 @@ data:
         --blackduck.trust.cert="${TRUST_CERT}" \
         --detect.wait.for.results=true \
         --detect.cleanup=false \
-        --detect.tools=CONTAINER_SCAN \
-        --detect.container.scan.image.id="${IMAGE}" \
+        --detect.tools=BINARY_SCAN \
+        --detect.binary.scan.file.path="${IMAGE_FILE}" \
         --detect.project.parent.name="${PARENT_PROJECT}" \
         --detect.project.parent.version.name="${PARENT_VERSION}" \
         --detect.project.name="${PROJECT_NAME}" \
@@ -141,6 +163,9 @@ data:
 
       SCAN_RESULT=$?
       set -e
+
+      # Clean up the image file to save space
+      rm -f "${IMAGE_FILE}"
 
       if [ $SCAN_RESULT -eq 0 ]; then
         echo "✅ SUCCESS: ${IMAGE}"
@@ -158,8 +183,6 @@ data:
 
     # Final results (note: due to subshell, we need to recalculate)
     TOTAL_IMAGES=$(echo "${IMAGES}" | wc -l)
-    SUCCESS_COUNT=0
-    FAILED_COUNT=0
 
     echo ""
     echo "=========================================="
@@ -167,7 +190,7 @@ data:
     echo "=========================================="
     echo "Total images: ${TOTAL_IMAGES}"
     
-    # Recount successes and failures by checking for our markers in the log
+    # Check if we had any failures
     if [ -n "${FAILED_IMAGES}" ]; then
       FAILED_COUNT=$(echo "${FAILED_IMAGES}" | tr ',' '\n' | wc -l)
       SUCCESS_COUNT=$((TOTAL_IMAGES - FAILED_COUNT))
@@ -175,8 +198,8 @@ data:
       echo "Failed scans: ${FAILED_COUNT}"
       echo "Failed images: ${FAILED_IMAGES}"
       echo ""
-      echo "❌ Some scans failed - check Black Duck for results"
-      exit 1
+      echo "⚠️  Some scans failed - check Black Duck for results"
+      # Don't exit with error - let partial results be useful
     else
       echo "Successful scans: ${TOTAL_IMAGES}"
       echo "Failed scans: 0"
@@ -195,13 +218,13 @@ data:
             "blackduck.synopsys.com/parent=${PARENT_PROJECT}" \
             "blackduck.synopsys.com/parent-version=${PARENT_VERSION}" \
             "blackduck.synopsys.com/scan-timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "blackduck.synopsys.com/scan-method=container-scanner" \
+            "blackduck.synopsys.com/scan-method=binary-scanner" \
             --overwrite 2>/dev/null || true
-          echo "Annotated: ${RESOURCE}"
+          echo "✅ Annotated: ${RESOURCE}"
         done
       done
     fi
 
     echo ""
-    echo "✅ Container scanning completed!"
+    echo "✅ Binary scanning completed!"
     echo "Check Black Duck dashboard for detailed results."
