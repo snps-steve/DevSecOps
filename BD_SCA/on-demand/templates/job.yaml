@@ -33,20 +33,27 @@ spec:
           secret:
             secretName: {{ .Values.registry.secretName }}
         {{- end }}
-        # Temporary storage for image downloads
+        # Temporary storage for container image downloads
         - name: temp-storage
           emptyDir:
-            sizeLimit: "10Gi"
+            sizeLimit: "20Gi"
       containers:
         - name: scanner
           image: {{ default "alpine:3.19" .Values.runner.image | quote }}
-          # No privileged mode needed for Binary Scanner
+          # MicroK8s-friendly: No privileged mode needed for BDSC Container Scanning
+          securityContext:
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
             - name: script
               mountPath: /opt/selfscan
               readOnly: true
             - name: temp-storage
-              mountPath: /tmp/images
+              mountPath: /tmp/container-images
             {{- if .Values.registry.secretName }}
             - name: registry-creds
               mountPath: /tmp/registry-creds
@@ -83,16 +90,18 @@ spec:
               value: {{ default "" .Values.detect.parentVersion | quote }}
             - name: PROJECT_GROUP
               value: {{ default "" .Values.detect.projectGroupName | quote }}
+            - name: PROJECT_TIER
+              value: {{ default "3" .Values.detect.projectTier | quote }}
             {{- if .Values.registry.secretName }}
             - name: REGISTRY_SECRET_PATH
               value: "/tmp/registry-creds"
             {{- end }}
           resources:
             requests:
-              memory: "512Mi"
-              cpu: "100m"
+              memory: "1Gi"
+              cpu: "500m"
             limits:
-              memory: "4Gi"
+              memory: "6Gi"
               cpu: "2"
           command:
             - /bin/sh
