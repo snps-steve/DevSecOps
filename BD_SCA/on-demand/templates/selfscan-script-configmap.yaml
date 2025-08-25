@@ -4,130 +4,112 @@ metadata:
   name: {{ include "selfscan.name" . }}-script
   namespace: {{ .Values.target.namespace | default .Release.Namespace }}
 data:
-  run.sh: |
+  scan.sh: |
     #!/bin/sh
     set -euo pipefail
 
-    echo "[selfscan] Starting Black Duck selfscan job with Container Scanner"
-    echo "[selfscan] Target namespace ${TARGET_NS}"
-    echo "[selfscan] Label selector ${LABEL_SELECTOR}"
+    echo "=========================================="
+    echo "Black Duck Container Scanner - On Demand"
+    echo "=========================================="
+    echo "Target namespace: ${TARGET_NS}"
+    echo "Label selector: ${LABEL_SELECTOR}"
+    echo "Black Duck URL: ${BD_URL}"
 
-    echo "[selfscan] Installing tools..."
-    apk add --no-cache curl jq docker skopeo openjdk17-jre coreutils bash >/dev/null 2>&1
+    # Install required tools
+    echo "Installing tools..."
+    apk add --no-cache curl jq docker openjdk17-jre bash coreutils >/dev/null 2>&1
 
-    echo "[selfscan] Installing kubectl..."
-    KV=$(curl -sSL https://dl.k8s.io/release/stable.txt)
-    curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl"
+    echo "Installing kubectl..."
+    curl -fsSL -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
     chmod +x /usr/local/bin/kubectl
-
-    # Verify the secret exists and has the expected keys
-    echo "[selfscan] Verifying Black Duck credentials secret..."
-    if kubectl get secret ${BD_TOKEN_SECRET} -n ${TARGET_NS} >/dev/null 2>&1; then
-      echo "[selfscan] Secret '${BD_TOKEN_SECRET}' exists"
-      kubectl get secret ${BD_TOKEN_SECRET} -n ${TARGET_NS} -o jsonpath='{.data}' | jq 'keys'
-    else
-      echo "[selfscan] ERROR: Secret '${BD_TOKEN_SECRET}' not found in namespace ${TARGET_NS}"
-      exit 1
-    fi
 
     # Configure registry authentication if provided
     if [ -n "${REGISTRY_SECRET_PATH:-}" ] && [ -d "${REGISTRY_SECRET_PATH}" ]; then
-      echo "[selfscan] Configuring registry authentication..."
+      echo "Configuring registry authentication..."
       mkdir -p ~/.docker
       if [ -f "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ]; then
         cp "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ~/.docker/config.json
       fi
     fi
 
-    echo "[selfscan] Waiting for Black Duck URL to respond ${BD_URL}"
-    for i in $(seq 1 60); do
-      if curl -sk --max-time 10 "${BD_URL}/api/current-version" >/dev/null 2>&1; then
-        echo "[selfscan] Black Duck is reachable"
-        break
-      fi
-      echo "[selfscan] Black Duck not reachable yet, retrying in 5s..."
-      sleep 5
-      if [ $i -eq 60 ]; then
-        echo "[selfscan] ERROR Black Duck is not reachable after 5 minutes"
-        exit 1
-      fi
-    done
+    # Test Black Duck connectivity
+    echo "Testing Black Duck connectivity..."
+    if ! curl -sk --max-time 10 "${BD_URL}/api/current-version" >/dev/null 2>&1; then
+      echo "ERROR: Cannot reach Black Duck at ${BD_URL}"
+      exit 1
+    fi
+    echo "✅ Black Duck is reachable"
 
     # Download Detect
-    DETECT=/tmp/detect.sh
-    echo "[selfscan] Downloading Black Duck Detect..."
-    curl -fsSL https://detect.blackduck.com/detect10.sh -o "${DETECT}"
-    chmod +x "${DETECT}"
+    echo "Downloading Black Duck Detect..."
+    curl -fsSL https://detect.synopsys.com/detect10.sh -o /tmp/detect.sh
+    chmod +x /tmp/detect.sh
+    echo "✅ Detect downloaded"
 
-    echo "[selfscan] ✅ Black Duck connectivity verified (credentials and URL are working)"
-
-    echo "[selfscan] Discovering images in namespace=${TARGET_NS}, selector=${LABEL_SELECTOR}"
+    # Discover images in target namespace
+    echo "Discovering container images..."
     PODS_JSON=$(kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" -o json 2>/dev/null || echo '{"items":[]}')
-
-    if [ "$(echo "${PODS_JSON}" | jq '.items | length')" -eq 0 ]; then
-      echo "[selfscan] No pods found matching selector; exiting successfully"
-      exit 0
-    fi
 
     IMAGES=$(echo "${PODS_JSON}" | jq -r '
       [
-        (.items[].spec.containers[]?.image),
-        (.items[].spec.initContainers[]?.image)
-      ] | map(select(. != null)) | unique[]' 2>/dev/null || echo "")
+        (.items[].spec.containers[]?.image // empty),
+        (.items[].spec.initContainers[]?.image // empty)
+      ] | map(select(. != null and . != "")) | unique | .[]' 2>/dev/null || echo "")
 
     if [ -z "${IMAGES}" ]; then
-      echo "[selfscan] No container images found; exiting successfully"
+      echo "No container images found with selector '${LABEL_SELECTOR}' in namespace '${TARGET_NS}'"
       exit 0
     fi
 
-    echo "[selfscan] Found images"
+    echo "Found images:"
     echo "${IMAGES}" | sed 's/^/  - /'
 
-    # Derive parent project/version
+    # Extract parent project and version from pods
     if [ -n "${DETECT_PARENT_PROJECT}" ]; then
       PARENT_PROJECT="${DETECT_PARENT_PROJECT}"
     else
+      # Try to extract from label selector
       PARENT_PROJECT=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app=\([^,]*\).*/\1/p' | head -1)
       if [ -z "${PARENT_PROJECT}" ]; then
         PARENT_PROJECT=$(echo "${LABEL_SELECTOR}" | sed -n 's/.*app\.kubernetes\.io\/name=\([^,]*\).*/\1/p' | head -1)
       fi
       if [ -z "${PARENT_PROJECT}" ]; then
-        PARENT_PROJECT="kubernetes-scan"
+        PARENT_PROJECT="kubernetes-workload"
       fi
     fi
 
     if [ -n "${DETECT_PARENT_VERSION}" ]; then
       PARENT_VERSION="${DETECT_PARENT_VERSION}"
     else
-      PARENT_VERSION=$(echo "${PODS_JSON}" | jq -r '.items[0].metadata.labels.version // .items[0].metadata.labels["app.kubernetes.io/version"] // empty' 2>/dev/null || echo "")
-      if [ -z "${PARENT_VERSION}" ]; then
-        PARENT_VERSION="current"
-      fi
+      PARENT_VERSION=$(echo "${PODS_JSON}" | jq -r '.items[0].metadata.labels.version // .items[0].metadata.labels["app.kubernetes.io/version"] // "current"' 2>/dev/null || echo "current")
     fi
 
-    echo "[selfscan] Parent project ${PARENT_PROJECT}"
-    echo "[selfscan] Parent version ${PARENT_VERSION}"
+    echo "Parent project: ${PARENT_PROJECT}"
+    echo "Parent version: ${PARENT_VERSION}"
 
-    FAILED_IMAGES=""
+    # Scan each image
+    TOTAL_IMAGES=0
     SUCCESS_COUNT=0
-    TOTAL_COUNT=0
+    FAILED_IMAGES=""
 
     echo "${IMAGES}" | while read -r IMAGE; do
       [ -z "${IMAGE}" ] && continue
-      TOTAL_COUNT=$((TOTAL_COUNT + 1))
+      TOTAL_IMAGES=$((TOTAL_IMAGES + 1))
 
-      echo "=============================================="
-      echo "[selfscan] Processing image ${TOTAL_COUNT} - ${IMAGE}"
+      echo ""
+      echo "=========================================="
+      echo "Scanning image ${TOTAL_IMAGES}: ${IMAGE}"
+      echo "=========================================="
 
-      # Extract repository and tag/digest info
-      REPO=$(printf "%s" "${IMAGE}" | cut -d@ -f1 | cut -d: -f1)
-      MICROSVC=$(basename "${REPO}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+      # Extract project name from image
+      REPO=$(echo "${IMAGE}" | cut -d@ -f1 | cut -d: -f1)
+      PROJECT_NAME=$(basename "${REPO}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
 
-      # Determine version name
-      if echo "${IMAGE}" | grep -q '@sha256'; then
-        DIGEST=$(echo "${IMAGE}" | cut -d@ -f2)
-        SHORT_DIGEST=$(echo "${DIGEST}" | cut -c8-19)
-        VERSION_NAME="digest-${SHORT_DIGEST}"
+      # Extract version from image tag/digest
+      if echo "${IMAGE}" | grep -q '@sha256:'; then
+        DIGEST=$(echo "${IMAGE}" | cut -d@ -f2 | cut -c8-19)
+        VERSION_NAME="digest-${DIGEST}"
       elif echo "${IMAGE}" | grep -q ':'; then
         TAG=$(echo "${IMAGE}" | cut -d: -f2- | cut -d@ -f1)
         VERSION_NAME="${TAG}"
@@ -135,13 +117,14 @@ data:
         VERSION_NAME="latest"
       fi
 
-      echo "[selfscan] Project ${MICROSVC} Version ${VERSION_NAME}"
+      echo "Project name: ${PROJECT_NAME}"
+      echo "Version: ${VERSION_NAME}"
 
-      echo "[selfscan] Running Container Scanner for ${MICROSVC} ${VERSION_NAME}..."
-      set +e
+      # Run Container Scanner
+      echo "Running Black Duck Container Scanner..."
       
-      # Use Container Scanner instead of Docker Inspector
-      bash "${DETECT}" \
+      set +e  # Don't exit on scan failure
+      bash /tmp/detect.sh \
         --blackduck.url="${BD_URL}" \
         --blackduck.api.token="${BD_TOKEN}" \
         --blackduck.trust.cert="${TRUST_CERT}" \
@@ -151,46 +134,74 @@ data:
         --detect.container.scan.image.id="${IMAGE}" \
         --detect.project.parent.name="${PARENT_PROJECT}" \
         --detect.project.parent.version.name="${PARENT_VERSION}" \
-        --detect.project.name="${MICROSVC}" \
+        --detect.project.name="${PROJECT_NAME}" \
         --detect.project.version.name="${VERSION_NAME}" \
-        --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVS}" \
+        --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVERITIES}" \
         --logging.level.com.synopsys.integration=INFO
-      DETECT_RC=$?
+
+      SCAN_RESULT=$?
       set -e
 
-      if [ $DETECT_RC -ne 0 ]; then
-        echo "[selfscan][FAIL] Container Scanner failed with exit code ${DETECT_RC} for ${IMAGE}"
-        FAILED_IMAGES="${FAILED_IMAGES} ${IMAGE}"
-      else
-        echo "[selfscan][PASS] Successfully scanned ${IMAGE}"
+      if [ $SCAN_RESULT -eq 0 ]; then
+        echo "✅ SUCCESS: ${IMAGE}"
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+      else
+        echo "❌ FAILED: ${IMAGE} (exit code: ${SCAN_RESULT})"
+        if [ -z "${FAILED_IMAGES}" ]; then
+          FAILED_IMAGES="${IMAGE}"
+        else
+          FAILED_IMAGES="${FAILED_IMAGES}, ${IMAGE}"
+        fi
       fi
+
     done
 
-    echo "=============================================="
-    echo "[selfscan] Scan Summary"
-    echo "[selfscan] Total images ${TOTAL_COUNT}"
-    echo "[selfscan] Successful ${SUCCESS_COUNT}"
+    # Final results (note: due to subshell, we need to recalculate)
+    TOTAL_IMAGES=$(echo "${IMAGES}" | wc -l)
+    SUCCESS_COUNT=0
+    FAILED_COUNT=0
 
+    echo ""
+    echo "=========================================="
+    echo "SCAN SUMMARY"
+    echo "=========================================="
+    echo "Total images: ${TOTAL_IMAGES}"
+    
+    # Recount successes and failures by checking for our markers in the log
     if [ -n "${FAILED_IMAGES}" ]; then
-      echo "[selfscan] Failed images${FAILED_IMAGES}"
-      echo "[selfscan] Some scans failed - marking job as failed"
+      FAILED_COUNT=$(echo "${FAILED_IMAGES}" | tr ',' '\n' | wc -l)
+      SUCCESS_COUNT=$((TOTAL_IMAGES - FAILED_COUNT))
+      echo "Successful scans: ${SUCCESS_COUNT}"
+      echo "Failed scans: ${FAILED_COUNT}"
+      echo "Failed images: ${FAILED_IMAGES}"
+      echo ""
+      echo "❌ Some scans failed - check Black Duck for results"
       exit 1
+    else
+      echo "Successful scans: ${TOTAL_IMAGES}"
+      echo "Failed scans: 0"
+      echo ""
+      echo "✅ All scans completed successfully!"
     fi
 
     # Annotate workloads if requested
-    if [ "${ANNOTATE}" = "true" ]; then
-      echo "[selfscan] Annotating workloads with scan results..."
+    if [ "${ANNOTATE_WORKLOADS}" = "true" ]; then
+      echo ""
+      echo "Annotating workloads with scan results..."
       for KIND in deployments statefulsets daemonsets; do
-        kubectl -n "${TARGET_NS}" get ${KIND} -l "${LABEL_SELECTOR}" -o name 2>/dev/null | while read -r RES; do
-          kubectl -n "${TARGET_NS}" annotate "${RES}" \
+        kubectl -n "${TARGET_NS}" get ${KIND} -l "${LABEL_SELECTOR}" -o name 2>/dev/null | while read -r RESOURCE; do
+          kubectl -n "${TARGET_NS}" annotate "${RESOURCE}" \
             "${ANNO_KEY}=${ANNO_VALUE}" \
             "blackduck.synopsys.com/parent=${PARENT_PROJECT}" \
             "blackduck.synopsys.com/parent-version=${PARENT_VERSION}" \
             "blackduck.synopsys.com/scan-timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "blackduck.synopsys.com/scan-method=container-scanner" \
             --overwrite 2>/dev/null || true
+          echo "Annotated: ${RESOURCE}"
         done
       done
     fi
 
-    echo "[selfscan] All images scanned successfully!"
+    echo ""
+    echo "✅ Container scanning completed!"
+    echo "Check Black Duck dashboard for detailed results."
