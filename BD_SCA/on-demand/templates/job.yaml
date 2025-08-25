@@ -16,10 +16,9 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ include "selfscan.name" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}
-    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 spec:
   backoffLimit: 2
-  ttlSecondsAfterFinished: 3600  # Clean up after 1 hour
+  ttlSecondsAfterFinished: 3600
   template:
     spec:
       serviceAccountName: {{ include "selfscan.sa" . }}
@@ -34,27 +33,25 @@ spec:
           secret:
             secretName: {{ .Values.registry.secretName }}
         {{- end }}
-        # Docker socket for Container Scanner
-        - name: docker-socket
-          hostPath:
-            path: /var/run/docker.sock
-            type: Socket
+        # Temporary storage for image downloads
+        - name: temp-storage
+          emptyDir:
+            sizeLimit: "10Gi"
       containers:
         - name: scanner
           image: {{ default "alpine:3.19" .Values.runner.image | quote }}
-          securityContext:
-            privileged: true  # Required for docker socket access
+          # No privileged mode needed for Binary Scanner
           volumeMounts:
             - name: script
               mountPath: /opt/selfscan
               readOnly: true
+            - name: temp-storage
+              mountPath: /tmp/images
             {{- if .Values.registry.secretName }}
             - name: registry-creds
               mountPath: /tmp/registry-creds
               readOnly: true
             {{- end }}
-            - name: docker-socket
-              mountPath: /var/run/docker.sock
           env:
             - name: BD_URL
               valueFrom:
@@ -92,12 +89,12 @@ spec:
             {{- end }}
           resources:
             requests:
-              memory: "256Mi"
+              memory: "512Mi"
               cpu: "100m"
             limits:
-              memory: "2Gi"
-              cpu: "1"
+              memory: "4Gi"
+              cpu: "2"
           command:
             - /bin/sh
             - -c
-            - exec /opt/selfscan/scan.sh
+            - exec /opt/selfscan/binary-scan.sh
