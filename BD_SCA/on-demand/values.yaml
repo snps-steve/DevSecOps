@@ -13,10 +13,10 @@ blackduck:
 
 detect:
   policyFailSeverities: "CRITICAL,BLOCKER"
-  # CORRECTED: Use Project Group instead of parent project
-  projectGroupName: "blackduck-platform-containers"      # Project Group name (created first)
+  # Project Group for organizing all the microservice projects
+  projectGroupName: "blackduck-platform-containers"      # Project Group name
   projectTier: "2"                     # Project tier (1=Critical, 2=High, 3=Medium, 4=Low)
-  
+
   # Additional BDSC-specific settings
   containerScan:
     enabled: true                      # Enable container scanning
@@ -28,26 +28,26 @@ registry:
 
 runner:
   image: "alpine:3.19"                 # Base image for scanning container
-  
+
   # Enhanced resource limits for the scanning job
   resources:
     requests:
-      memory: "2Gi"                    # Increased from default
+      memory: "2Gi"
       cpu: "500m"
     limits:
-      memory: "8Gi"                    # Increased for larger images
-      cpu: "4"                         # More CPU for faster processing
-      ephemeralStorage: "50Gi"         # Disk space for image downloads
+      memory: "8Gi"
+      cpu: "4"
+      ephemeralStorage: "50Gi"
 
 # Enhanced logging and debugging
 debug:
-  enabled: false                       # Set to true for verbose debugging
-  keepTempFiles: false                # Keep temporary files for debugging
-  logLevel: "INFO"                    # DEBUG, INFO, WARN, ERROR
+  enabled: false
+  keepTempFiles: false
+  logLevel: "INFO"
 
-# Docker Inspector configuration (optional - for traditional Docker Inspector mode)
+# Docker Inspector configuration (optional)
 dockerInspector:
-  install: false                       # Set to true if you want dedicated Docker Inspector services
+  install: false
   replicas: 1
   image: "blackducksoftware/blackduck-imageinspector-ubuntu:6.2.1"
   createSharedPvc: false
