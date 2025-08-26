@@ -1,6 +1,6 @@
 target:
-  namespace: "bd"                                         # Black Duck namespace where the pods are
-  labelSelector: "app=blackduck"                         # Scan Black Duck's own containers for testing
+  namespace: "bd"                                         # Black Duck namespace
+  labelSelector: "app=blackduck"                         # Scan Black Duck containers
   annotateWorkloads: true
   annotateKey: "blackduck.synopsys.com/policy"
   annotateValueOnPass: "pass"
@@ -13,9 +13,8 @@ blackduck:
 
 detect:
   policyFailSeverities: "CRITICAL,BLOCKER"
-  parentProject: "blackduck-platform-containers"         # Meaningful name for testing
-  parentVersion: "2025.4.2"                             # Version matches your Black Duck version
-  projectGroupName: ""                 
+  # CORRECTED: Use Project Group instead of parent project
+  projectGroupName: "blackduck-platform-containers"      # Project Group name (created first)
   projectTier: "2"                     # Project tier (1=Critical, 2=High, 3=Medium, 4=Low)
   
   # Additional BDSC-specific settings
