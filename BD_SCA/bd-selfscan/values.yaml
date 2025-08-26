@@ -1,7 +1,9 @@
+# BD SelfScan Configuration
 # Global Configuration
 global:
   namespace: bd-selfscan-system
   
+# Black Duck Configuration  
 blackduck:
   url: ""  # From secret
   token: ""  # From secret
@@ -11,8 +13,12 @@ blackduck:
 # Phase 1: On-demand scanning
 onDemand:
   enabled: true
-  
-# Phase 2: Automated scanning  
+
+# Scanning target (can be set via --set scanTarget="Application Name")
+# Leave empty to scan all configured applications
+scanTarget: ""
+
+# Phase 2: Automated scanning (disabled until Phase 1 validation complete)
 automated:
   enabled: false  # Enable after Phase 1 validation
   controller:
@@ -34,6 +40,7 @@ automated:
   scheduled:
     enabled: false
 
+# Scanner pod configuration
 scanner:
   image: "alpine:3.19"
   resources:
@@ -45,8 +52,33 @@ scanner:
       cpu: "4"
       ephemeralStorage: "50Gi"
 
-# Application configurations (can override via ConfigMap)
-applications: []  # Loaded from ConfigMap
+# Application configurations
+# This will be loaded from the ConfigMap, but can be overridden here for testing
+applications: []  # Loaded from bd-selfscan-applications ConfigMap
+
+# Black Duck Detect Configuration
+detect:
+  # Default policy failure severities
+  policyFailSeverities: "CRITICAL,BLOCKER"
+  
+  # Project organization settings
+  parentProject: ""
+  parentVersion: ""
+  projectGroupName: ""
+  projectTier: 3
+  
+  # Timeout and retry settings
+  timeout: "1800"  # 30 minutes
+  retries: "3"
+
+# Registry Configuration (for private registries)
+registry:
+  secretName: ""  # Optional: Secret containing registry credentials
+
+# Container Image Download Settings
+containerDownload:
+  timeout: "600"  # 10 minutes per image
+  retries: "3"
 
 # Monitoring and observability
 monitoring:
@@ -54,6 +86,24 @@ monitoring:
   serviceMonitor:
     enabled: false
     
+# Debug settings
 debug:
   enabled: false
   logLevel: "INFO"
+  keepTempFiles: false
+
+# Job TTL and cleanup
+job:
+  ttlSecondsAfterFinished: 3600  # 1 hour
+  backoffLimit: 2
+
+# Security context
+securityContext:
+  runAsNonRoot: false  # BDSC Container scanning requires specific permissions
+  runAsUser: 1001
+  runAsGroup: 1001
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL

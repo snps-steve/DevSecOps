@@ -1,0 +1,7 @@
+applications:
+  - name: "Black Duck SCA"           # Your test case
+    namespace: "bd"
+    labelSelector: "app=blackduck"
+    projectGroup: "Black Duck SCA"
+    projectTier: 2
+    scanOnDeploy: true
