@@ -1,6 +1,0 @@
-apiVersion: v2
-name: bd-selfscan
-description: Scan all Black Duck platform images after each BD upgrade
-type: application
-version: 0.1.0
-appVersion: "1.0"
