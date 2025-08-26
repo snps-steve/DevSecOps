@@ -1,0 +1,59 @@
+# Global Configuration
+global:
+  namespace: bd-selfscan-system
+  
+blackduck:
+  url: ""  # From secret
+  token: ""  # From secret
+  tokenSecretName: "blackduck-creds"
+  trustCert: true
+
+# Phase 1: On-demand scanning
+onDemand:
+  enabled: true
+  
+# Phase 2: Automated scanning  
+automated:
+  enabled: false  # Enable after Phase 1 validation
+  controller:
+    image: "python:3.11-alpine"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi" 
+        cpu: "500m"
+  
+  # Webhook for deployment events
+  webhook:
+    enabled: false
+    port: 8443
+    
+  # Scheduled scanning
+  scheduled:
+    enabled: false
+
+scanner:
+  image: "alpine:3.19"
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "500m"
+    limits:
+      memory: "8Gi"
+      cpu: "4"
+      ephemeralStorage: "50Gi"
+
+# Application configurations (can override via ConfigMap)
+applications: []  # Loaded from ConfigMap
+
+# Monitoring and observability
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+    
+debug:
+  enabled: false
+  logLevel: "INFO"

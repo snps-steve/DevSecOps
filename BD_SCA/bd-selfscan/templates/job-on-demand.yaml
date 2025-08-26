@@ -1,0 +1,73 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "bd-selfscan.name" . }}-{{ default "all" .Values.scanTarget }}-{{ now | date "20060102-150405" }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "bd-selfscan.name" . }}
+    app.kubernetes.io/component: scanner
+    scan-type: "on-demand"
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      serviceAccountName: {{ include "bd-selfscan.name" . }}
+      restartPolicy: Never
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "bd-selfscan.name" . }}-scanner-scripts
+            defaultMode: 0755
+        - name: applications-config
+          configMap:
+            name: bd-selfscan-applications
+        - name: temp-storage
+          emptyDir:
+            sizeLimit: {{ .Values.scanner.resources.limits.ephemeralStorage }}
+      containers:
+        - name: scanner
+          image: {{ .Values.scanner.image }}
+          command: ["/bin/bash"]
+          args:
+            {{- if .Values.scanTarget }}
+            - "-c"
+            - "/scripts/scan-application.sh '{{ .Values.scanTarget }}'"
+            {{- else }}
+            - "/scripts/scan-all-applications.sh"
+            {{- end }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: applications-config
+              mountPath: /config
+            - name: temp-storage
+              mountPath: /tmp/container-images
+          env:
+            # Black Duck credentials
+            - name: BD_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.blackduck.tokenSecretName }}
+                  key: url
+            - name: BD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.blackduck.tokenSecretName }}
+                  key: token
+            - name: TRUST_CERT
+              value: "{{ .Values.blackduck.trustCert }}"
+          resources:
+            {{- toYaml .Values.scanner.resources | nindent 12 }}
+      initContainers:
+        - name: install-tools
+          image: alpine:3.19
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              apk add --no-cache curl jq bash coreutils openjdk17-jre skopeo yq
+              curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+              chmod +x /usr/local/bin/kubectl
+          volumeMounts:
+            - name: temp-storage
+              mountPath: /tmp
