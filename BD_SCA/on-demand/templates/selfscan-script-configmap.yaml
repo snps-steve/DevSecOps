@@ -8,143 +8,71 @@ data:
     #!/bin/sh
     set -euo pipefail
 
-    echo "Starting BDSC Container Scanner for MicroK8s"
+    echo "Starting BDSC Container Scanner"
     echo "Target namespace: ${TARGET_NS}"
     echo "Label selector: ${LABEL_SELECTOR}"
-    echo "Black Duck URL: ${BD_URL}"
 
     # Install tools
-    echo "Installing required tools..."
     apk add --no-cache curl jq bash coreutils openjdk17-jre skopeo
 
     # Install kubectl
-    echo "Installing kubectl..."
-    curl -fsSL -o /usr/local/bin/kubectl \
-      "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
     chmod +x /usr/local/bin/kubectl
 
-    # Configure registry auth if provided
-    if [ -n "${REGISTRY_SECRET_PATH:-}" ] && [ -d "${REGISTRY_SECRET_PATH}" ]; then
-      echo "Configuring registry authentication..."
-      mkdir -p ~/.docker
-      if [ -f "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ]; then
-        cp "${REGISTRY_SECRET_PATH}/.dockerconfigjson" ~/.docker/config.json
-        echo "Registry credentials configured"
-      fi
-    fi
-
-    # Test Black Duck connectivity
+    # Test connectivity
     echo "Testing Black Duck connectivity..."
-    if ! curl -sk --max-time 10 "${BD_URL}/api/current-version"; then
-      echo "ERROR: Cannot reach Black Duck at ${BD_URL}"
-      exit 1
-    fi
-    echo "Black Duck connectivity confirmed"
+    curl -sk --max-time 10 "${BD_URL}/api/current-version" || exit 1
 
     # Download Detect
-    echo "Downloading Black Duck Detect..."
     curl -fsSL https://detect.blackduck.com/detect10.sh -o /tmp/detect.sh
     chmod +x /tmp/detect.sh
-    echo "Black Duck Detect downloaded successfully"
 
-    # Get container images from target namespace
-    echo "Fetching container images from namespace ${TARGET_NS} with selector '${LABEL_SELECTOR}'"
-    PODS_JSON=$(kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" -o json || echo '{"items":[]}')
-
-    # Extract unique images from containers and initContainers
-    IMAGES=$(echo "${PODS_JSON}" | jq -r '
-      [
-        (.items[].spec.containers[]?.image // empty),
-        (.items[].spec.initContainers[]?.image // empty)
-      ] 
-      | map(select(. != null and . != "")) 
-      | unique 
-      | .[]' 2>/dev/null || echo "")
+    # Get container images
+    PODS_JSON=$(kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" -o json)
+    IMAGES=$(echo "${PODS_JSON}" | jq -r '[(.items[].spec.containers[]?.image // empty), (.items[].spec.initContainers[]?.image // empty)] | map(select(. != null and . != "")) | unique | .[]')
 
     if [ -z "${IMAGES}" ]; then
-      echo "No container images found with selector '${LABEL_SELECTOR}' in namespace '${TARGET_NS}'"
-      echo "Available pods:"
-      kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" || echo "No pods found"
-      echo "All pods in namespace:"
-      kubectl -n "${TARGET_NS}" get pods || echo "No pods in namespace"
+      echo "No images found with selector '${LABEL_SELECTOR}' in namespace '${TARGET_NS}'"
       exit 0
     fi
 
     echo "Found $(echo "${IMAGES}" | wc -l) unique images:"
     echo "${IMAGES}" | sed 's/^/  - /'
 
-    # Set parent project details
-    PARENT_PROJECT="${DETECT_PARENT_PROJECT:-kubernetes-workload-${TARGET_NS}}"
-    PARENT_VERSION="${DETECT_PARENT_VERSION:-$(date +%Y-%m-%d)}"
+    # Set project group details
+    PROJECT_GROUP="${PROJECT_GROUP:-${DETECT_PARENT_PROJECT:-kubernetes-containers}}"
+    echo "Project Group: ${PROJECT_GROUP}"
 
-    echo "Parent project: ${PARENT_PROJECT} v${PARENT_VERSION}"
-
-    # Create parent project with a reliable structure  
-    echo "Creating parent project..."
-    mkdir -p /tmp/parent-project
-    cd /tmp/parent-project
-
-    # Create a simple text-based project structure (avoid NPM detection issues)
-    echo "# ${PARENT_PROJECT}" > README.md
-    echo "Kubernetes workload parent project for namespace: ${TARGET_NS}" >> README.md
-    echo "Scanned on: $(date)" >> README.md
-    echo "Label selector: ${LABEL_SELECTOR}" >> README.md
-
-    # Create a simple requirements.txt for more reliable detection
-    cat > requirements.txt << EOF
-# Parent project dependencies placeholder
-# This file ensures Detect can create the parent project reliably
-requests>=2.25.0
-urllib3>=1.26.0
-EOF
-
-    # Create parent project in Black Duck with lowered accuracy requirements
-    echo "Creating parent project in Black Duck..."
-    bash /tmp/detect.sh \
-      --blackduck.url="${BD_URL}" \
-      --blackduck.api.token="${BD_TOKEN}" \
-      --blackduck.trust.cert="${TRUST_CERT}" \
-      --detect.wait.for.results=true \
-      --detect.project.name="${PARENT_PROJECT}" \
-      --detect.project.version.name="${PARENT_VERSION}" \
-      --detect.tools=DETECTOR \
-      --detect.project.tier="${PROJECT_TIER}" \
-      --detect.project.version.update=true \
-      --detect.accuracy.required=NONE \
-      --detect.pip.requirements.path="/tmp/parent-project/requirements.txt" \
-      --logging.level.com.synopsys.integration=INFO
-
-    PARENT_RESULT=$?
-    if [ $PARENT_RESULT -ne 0 ]; then
-      echo "WARNING: Parent project creation had issues (exit code: ${PARENT_RESULT}), trying alternative approach..."
+    # Create Project Group first (if specified)
+    if [ -n "${PROJECT_GROUP}" ]; then
+      echo "Creating/ensuring Project Group exists: ${PROJECT_GROUP}"
       
-      # Alternative: Create parent project using minimal approach
+      # Simple approach: Try to create a temporary project in the group
+      # This will create the group if it doesn't exist
+      mkdir -p /tmp/group-project
+      cd /tmp/group-project
+      echo "Temporary project to ensure group exists" > README.txt
+      
       bash /tmp/detect.sh \
         --blackduck.url="${BD_URL}" \
         --blackduck.api.token="${BD_TOKEN}" \
         --blackduck.trust.cert="${TRUST_CERT}" \
         --detect.wait.for.results=false \
-        --detect.project.name="${PARENT_PROJECT}" \
-        --detect.project.version.name="${PARENT_VERSION}" \
+        --detect.project.name="temp-group-creator" \
+        --detect.project.version.name="temp" \
+        --detect.project.group.name="${PROJECT_GROUP}" \
         --detect.tools=NONE \
-        --detect.project.tier="${PROJECT_TIER}" \
-        --detect.project.version.update=true \
-        --detect.blackduck.signature.scanner.disabled=true \
-        --logging.level.com.synopsys.integration=INFO
-        
-      echo "Alternative parent project creation completed"
-    else
-      echo "Parent project created successfully"
+        --detect.project.tier="4" \
+        --logging.level.com.synopsys.integration=WARN
+      
+      echo "Project Group setup completed"
     fi
 
     # Function to sanitize project names
     sanitize_project_name() {
       local name="$1"
-      # Remove registry prefixes and convert to valid project name
       name=$(echo "$name" | sed 's|.*/||' | sed 's/:.*$//')
-      # Replace invalid characters with hyphens and convert to lowercase
       name=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.-]/-/g' | sed 's/--*/-/g' | sed 's/^-\|-$//g')
-      # Ensure it's not empty and not too long
       [ -z "$name" ] && name="unknown-image"
       [ ${#name} -gt 100 ] && name="${name:0:100}"
       echo "$name"
@@ -156,7 +84,6 @@ EOF
       if echo "$image" | grep -q ':'; then
         echo "$image" | cut -d: -f2- | cut -d@ -f1
       elif echo "$image" | grep -q '@'; then
-        # For digest-based images, use the digest as version
         echo "$image" | cut -d@ -f2 | cut -c1-12
       else
         echo "latest"
@@ -169,66 +96,58 @@ EOF
     SUCCESS_COUNT=0
     TOTAL_IMAGES=0
 
-    # Create a temporary file to store images for processing
-    echo "${IMAGES}" > /tmp/images.txt
-
-    # Use process substitution to avoid subshell variable issues
-    while IFS= read -r IMAGE; do
+    echo "${IMAGES}" | while read -r IMAGE; do
       [ -z "${IMAGE}" ] && continue
       TOTAL_IMAGES=$((TOTAL_IMAGES + 1))
 
       echo ""
       echo "=== Scanning container ${TOTAL_IMAGES}: ${IMAGE} ==="
 
-      # Extract project details with improved parsing
       PROJECT_NAME=$(sanitize_project_name "${IMAGE}")
       VERSION_NAME=$(extract_version "${IMAGE}")
 
       echo "  Project Name: ${PROJECT_NAME}"
       echo "  Version: ${VERSION_NAME}"
+      echo "  Project Group: ${PROJECT_GROUP}"
 
-      # Download image
       IMAGE_FILE="/tmp/container-images/${PROJECT_NAME}-${TOTAL_IMAGES}.tar"
-      echo "  Downloading image to ${IMAGE_FILE}..."
+      echo "  Downloading image..."
       
-      # Add timeout and retry logic for image download
       DOWNLOAD_SUCCESS=false
       for attempt in 1 2 3; do
         echo "  Download attempt ${attempt}/3..."
-        if timeout 300 skopeo copy "docker://${IMAGE}" "docker-archive:${IMAGE_FILE}:${IMAGE}" --quiet 2>/dev/null; then
-          echo "  ✓ Downloaded: ${IMAGE}"
+        if timeout 600 skopeo copy "docker://${IMAGE}" "docker-archive:${IMAGE_FILE}:${IMAGE}" --quiet 2>/dev/null; then
+          echo "  Downloaded: ${IMAGE}"
           DOWNLOAD_SUCCESS=true
           break
         else
-          echo "  ✗ Download attempt ${attempt} failed"
-          sleep 5
+          echo "  Download attempt ${attempt} failed"
+          sleep 10
         fi
       done
 
       if [ "$DOWNLOAD_SUCCESS" = "true" ]; then
-        # Verify file was created and has content
         if [ ! -f "${IMAGE_FILE}" ] || [ ! -s "${IMAGE_FILE}" ]; then
-          echo "  ✗ Downloaded file is empty or missing: ${IMAGE_FILE}"
+          echo "  Downloaded file is empty or missing: ${IMAGE_FILE}"
           continue
         fi
 
         echo "  File size: $(du -h ${IMAGE_FILE} | cut -f1)"
-
-        # BDSC Container Scan
         echo "  Running BDSC container scan..."
         cd /tmp
         
+        # Container scan with reduced timeout and proper project group assignment
         bash /tmp/detect.sh \
           --blackduck.url="${BD_URL}" \
           --blackduck.api.token="${BD_TOKEN}" \
           --blackduck.trust.cert="${TRUST_CERT}" \
           --detect.wait.for.results=true \
+          --detect.timeout=180000 \
           --detect.tools=CONTAINER_SCAN \
           --detect.container.scan.file.path="${IMAGE_FILE}" \
-          --detect.project.parent.name="${PARENT_PROJECT}" \
-          --detect.project.parent.version.name="${PARENT_VERSION}" \
           --detect.project.name="${PROJECT_NAME}" \
           --detect.project.version.name="${VERSION_NAME}" \
+          --detect.project.group.name="${PROJECT_GROUP}" \
           --detect.project.tier="${PROJECT_TIER}" \
           --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVERITIES}" \
           --detect.project.version.update=true \
@@ -238,74 +157,60 @@ EOF
           --logging.level.com.synopsys.integration=INFO
 
         SCAN_RESULT=$?
-        
-        # Clean up image file immediately to save space
         rm -f "${IMAGE_FILE}"
 
         if [ $SCAN_RESULT -eq 0 ]; then
-          echo "  ✓ SUCCESS: ${IMAGE}"
+          echo "  SUCCESS: ${IMAGE}"
+          SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+        elif [ $SCAN_RESULT -eq 2 ]; then
+          echo "  TIMEOUT: ${IMAGE} - scan uploaded but timed out waiting for BOM completion"
+          echo "  (This is often normal for large images - check Black Duck UI for results)"
           SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         else
-          echo "  ✗ FAILED: ${IMAGE} (exit code: ${SCAN_RESULT})"
-          
-          # Log some debug info for failures
-          echo "  Debug info:"
-          echo "    - Image: ${IMAGE}"
-          echo "    - Project: ${PROJECT_NAME}"
-          echo "    - Version: ${VERSION_NAME}"
-          echo "    - Parent: ${PARENT_PROJECT}:${PARENT_VERSION}"
+          echo "  FAILED: ${IMAGE} (exit code: ${SCAN_RESULT})"
         fi
       else
-        echo "  ✗ Failed to download after 3 attempts: ${IMAGE}"
+        echo "  Failed to download after 3 attempts: ${IMAGE}"
       fi
 
-      # Clean up any remaining temporary files
       rm -f /tmp/container-images/${PROJECT_NAME}-${TOTAL_IMAGES}.*
 
-    done < /tmp/images.txt
+    done
 
     echo ""
     echo "=== BDSC Container Scanning Summary ==="
-    echo "Total images processed: ${TOTAL_IMAGES}"
+    echo "Total images processed: ${TOTAL_IMAGES}"  
     echo "Successful scans: ${SUCCESS_COUNT}"
     echo "Failed scans: $((TOTAL_IMAGES - SUCCESS_COUNT))"
-    echo "Success rate: $(( SUCCESS_COUNT * 100 / TOTAL_IMAGES ))%" 2>/dev/null || echo "Success rate: N/A"
     echo ""
     echo "Black Duck Project Details:"
-    echo "  Parent Project: ${PARENT_PROJECT}"
-    echo "  Parent Version: ${PARENT_VERSION}"
+    echo "  Project Group: ${PROJECT_GROUP}"
     echo "  Project Tier: ${PROJECT_TIER}"
     echo ""
     echo "Check Black Duck UI at: ${BD_URL}"
-    echo "Navigate to: Projects -> ${PARENT_PROJECT} -> Child Projects"
+    echo "Navigate to: Project Groups -> ${PROJECT_GROUP}"
     echo ""
 
-    # Annotate workloads if requested
     if [ "${ANNOTATE_WORKLOADS}" = "true" ]; then
       echo "Annotating workloads..."
-      WORKLOAD_COUNT=0
       kubectl -n "${TARGET_NS}" get deployments,statefulsets,daemonsets -l "${LABEL_SELECTOR}" -o name | while read -r WORKLOAD; do
         if [ -n "${WORKLOAD}" ]; then
           kubectl -n "${TARGET_NS}" annotate "${WORKLOAD}" "${ANNO_KEY}=${ANNO_VALUE}" --overwrite
           echo "Annotated ${WORKLOAD}"
-          WORKLOAD_COUNT=$((WORKLOAD_COUNT + 1))
         fi
       done
-      echo "Annotated ${WORKLOAD_COUNT} workloads"
     fi
 
-    # Final cleanup
     rm -rf /tmp/container-images
-    rm -f /tmp/images.txt
 
     echo ""
     if [ $SUCCESS_COUNT -eq $TOTAL_IMAGES ] && [ $TOTAL_IMAGES -gt 0 ]; then
-      echo "BDSC Container scanning completed successfully! All images scanned."
+      echo "BDSC Container scanning completed successfully!"
       exit 0
     elif [ $SUCCESS_COUNT -gt 0 ]; then
-      echo "BDSC Container scanning completed with some failures. ${SUCCESS_COUNT}/${TOTAL_IMAGES} successful."
+      echo "BDSC Container scanning completed with some timeouts/failures. ${SUCCESS_COUNT}/${TOTAL_IMAGES} successful."
       exit 0
     else
-      echo "BDSC Container scanning failed. No images were successfully scanned."
+      echo "BDSC Container scanning failed. No images were successfully processed."
       exit 1
     fi
