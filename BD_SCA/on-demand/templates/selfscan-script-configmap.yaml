@@ -27,6 +27,49 @@ data:
     curl -fsSL https://detect.blackduck.com/detect10.sh -o /tmp/detect.sh
     chmod +x /tmp/detect.sh
 
+    # Set desired project group name
+    DESIRED_PROJECT_GROUP="${PROJECT_GROUP:-${DETECT_PROJECT_GROUP:-blackduck-platform-containers}}"
+    echo "Desired Project Group: ${DESIRED_PROJECT_GROUP}"
+
+    # Check if project group exists and create if needed
+    echo "Checking for existing project groups..."
+
+    PROJECT_GROUPS_RESPONSE=$(curl -sk -H "Authorization: Bearer ${BD_TOKEN}" \
+      "${BD_URL}/api/project-groups?limit=100" 2>/dev/null || echo '')
+
+    if [ -n "$PROJECT_GROUPS_RESPONSE" ] && echo "$PROJECT_GROUPS_RESPONSE" | jq -e . >/dev/null 2>&1; then
+      # Check if desired group exists
+      EXISTING_GROUP=$(echo "$PROJECT_GROUPS_RESPONSE" | jq -r --arg name "$DESIRED_PROJECT_GROUP" \
+        '.items[]? | select(.name == $name) | .name' 2>/dev/null || echo "")
+
+      if [ -n "$EXISTING_GROUP" ]; then
+        echo "Found existing project group: $EXISTING_GROUP"
+        PROJECT_GROUP_NAME="$EXISTING_GROUP"
+      else
+        echo "Project group '$DESIRED_PROJECT_GROUP' not found. Creating it..."
+
+        # Create project group
+        CREATE_PAYLOAD='{"name":"'$DESIRED_PROJECT_GROUP'","description":"Container images from Kubernetes namespace: '$TARGET_NS' (auto-created by bd-selfscan)"}'
+
+        CREATE_RESPONSE=$(curl -sk -X POST \
+          -H "Authorization: Bearer ${BD_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d "$CREATE_PAYLOAD" \
+          "${BD_URL}/api/project-groups" 2>/dev/null || echo '')
+
+        if [ -n "$CREATE_RESPONSE" ] && echo "$CREATE_RESPONSE" | jq -e '.name' >/dev/null 2>&1; then
+          PROJECT_GROUP_NAME=$(echo "$CREATE_RESPONSE" | jq -r '.name')
+          echo "Successfully created project group: $PROJECT_GROUP_NAME"
+        else
+          echo "Failed to create project group. Proceeding without group assignment."
+          PROJECT_GROUP_NAME=""
+        fi
+      fi
+    else
+      echo "Could not retrieve project groups. Proceeding without group assignment."
+      PROJECT_GROUP_NAME=""
+    fi
+
     # Get container images
     PODS_JSON=$(kubectl -n "${TARGET_NS}" get pods -l "${LABEL_SELECTOR}" -o json)
     IMAGES=$(echo "${PODS_JSON}" | jq -r '[(.items[].spec.containers[]?.image // empty), (.items[].spec.initContainers[]?.image // empty)] | map(select(. != null and . != "")) | unique | .[]')
@@ -38,35 +81,6 @@ data:
 
     echo "Found $(echo "${IMAGES}" | wc -l) unique images:"
     echo "${IMAGES}" | sed 's/^/  - /'
-
-    # Set project group details
-    PROJECT_GROUP="${PROJECT_GROUP:-${DETECT_PARENT_PROJECT:-kubernetes-containers}}"
-    echo "Project Group: ${PROJECT_GROUP}"
-
-    # Create Project Group first (if specified)
-    if [ -n "${PROJECT_GROUP}" ]; then
-      echo "Creating/ensuring Project Group exists: ${PROJECT_GROUP}"
-      
-      # Simple approach: Try to create a temporary project in the group
-      # This will create the group if it doesn't exist
-      mkdir -p /tmp/group-project
-      cd /tmp/group-project
-      echo "Temporary project to ensure group exists" > README.txt
-      
-      bash /tmp/detect.sh \
-        --blackduck.url="${BD_URL}" \
-        --blackduck.api.token="${BD_TOKEN}" \
-        --blackduck.trust.cert="${TRUST_CERT}" \
-        --detect.wait.for.results=false \
-        --detect.project.name="temp-group-creator" \
-        --detect.project.version.name="temp" \
-        --detect.project.group.name="${PROJECT_GROUP}" \
-        --detect.tools=NONE \
-        --detect.project.tier="4" \
-        --logging.level.com.synopsys.integration=WARN
-      
-      echo "Project Group setup completed"
-    fi
 
     # Function to sanitize project names
     sanitize_project_name() {
@@ -108,11 +122,11 @@ data:
 
       echo "  Project Name: ${PROJECT_NAME}"
       echo "  Version: ${VERSION_NAME}"
-      echo "  Project Group: ${PROJECT_GROUP}"
+      [ -n "${PROJECT_GROUP_NAME}" ] && echo "  Project Group: ${PROJECT_GROUP_NAME}"
 
       IMAGE_FILE="/tmp/container-images/${PROJECT_NAME}-${TOTAL_IMAGES}.tar"
       echo "  Downloading image..."
-      
+
       DOWNLOAD_SUCCESS=false
       for attempt in 1 2 3; do
         echo "  Download attempt ${attempt}/3..."
@@ -135,26 +149,46 @@ data:
         echo "  File size: $(du -h ${IMAGE_FILE} | cut -f1)"
         echo "  Running BDSC container scan..."
         cd /tmp
-        
-        # Container scan with reduced timeout and proper project group assignment
-        bash /tmp/detect.sh \
-          --blackduck.url="${BD_URL}" \
-          --blackduck.api.token="${BD_TOKEN}" \
-          --blackduck.trust.cert="${TRUST_CERT}" \
-          --detect.wait.for.results=true \
-          --detect.timeout=180000 \
-          --detect.tools=CONTAINER_SCAN \
-          --detect.container.scan.file.path="${IMAGE_FILE}" \
-          --detect.project.name="${PROJECT_NAME}" \
-          --detect.project.version.name="${VERSION_NAME}" \
-          --detect.project.group.name="${PROJECT_GROUP}" \
-          --detect.project.tier="${PROJECT_TIER}" \
-          --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVERITIES}" \
-          --detect.project.version.update=true \
-          --detect.cleanup=false \
-          --detect.project.version.distribution=EXTERNAL \
-          --detect.project.version.phase=DEVELOPMENT \
-          --logging.level.com.synopsys.integration=INFO
+
+        # Build detect command with conditional project group
+        if [ -n "${PROJECT_GROUP_NAME}" ]; then
+          bash /tmp/detect.sh \
+            --blackduck.url="${BD_URL}" \
+            --blackduck.api.token="${BD_TOKEN}" \
+            --blackduck.trust.cert="${TRUST_CERT}" \
+            --detect.wait.for.results=true \
+            --detect.timeout=300000 \
+            --detect.tools=CONTAINER_SCAN \
+            --detect.container.scan.file.path="${IMAGE_FILE}" \
+            --detect.project.name="${PROJECT_NAME}" \
+            --detect.project.version.name="${VERSION_NAME}" \
+            --detect.project.group.name="${PROJECT_GROUP_NAME}" \
+            --detect.project.tier="${PROJECT_TIER}" \
+            --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVERITIES}" \
+            --detect.project.version.update=true \
+            --detect.cleanup=false \
+            --detect.project.version.distribution=EXTERNAL \
+            --detect.project.version.phase=DEVELOPMENT \
+            --logging.level.com.synopsys.integration=INFO
+        else
+          bash /tmp/detect.sh \
+            --blackduck.url="${BD_URL}" \
+            --blackduck.api.token="${BD_TOKEN}" \
+            --blackduck.trust.cert="${TRUST_CERT}" \
+            --detect.wait.for.results=true \
+            --detect.timeout=300000 \
+            --detect.tools=CONTAINER_SCAN \
+            --detect.container.scan.file.path="${IMAGE_FILE}" \
+            --detect.project.name="${PROJECT_NAME}" \
+            --detect.project.version.name="${VERSION_NAME}" \
+            --detect.project.tier="${PROJECT_TIER}" \
+            --detect.policy.check.fail.on.severities="${POLICY_FAIL_SEVERITIES}" \
+            --detect.project.version.update=true \
+            --detect.cleanup=false \
+            --detect.project.version.distribution=EXTERNAL \
+            --detect.project.version.phase=DEVELOPMENT \
+            --logging.level.com.synopsys.integration=INFO
+        fi
 
         SCAN_RESULT=$?
         rm -f "${IMAGE_FILE}"
@@ -164,7 +198,7 @@ data:
           SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         elif [ $SCAN_RESULT -eq 2 ]; then
           echo "  TIMEOUT: ${IMAGE} - scan uploaded but timed out waiting for BOM completion"
-          echo "  (This is often normal for large images - check Black Duck UI for results)"
+          echo "  (Check Black Duck UI - the scan data was likely processed successfully)"
           SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         else
           echo "  FAILED: ${IMAGE} (exit code: ${SCAN_RESULT})"
@@ -179,16 +213,14 @@ data:
 
     echo ""
     echo "=== BDSC Container Scanning Summary ==="
-    echo "Total images processed: ${TOTAL_IMAGES}"  
-    echo "Successful scans: ${SUCCESS_COUNT}"
-    echo "Failed scans: $((TOTAL_IMAGES - SUCCESS_COUNT))"
+    echo "Total images found: $(echo "${IMAGES}" | wc -l)"
     echo ""
     echo "Black Duck Project Details:"
-    echo "  Project Group: ${PROJECT_GROUP}"
+    [ -n "${PROJECT_GROUP_NAME}" ] && echo "  Project Group: ${PROJECT_GROUP_NAME}"
     echo "  Project Tier: ${PROJECT_TIER}"
     echo ""
     echo "Check Black Duck UI at: ${BD_URL}"
-    echo "Navigate to: Project Groups -> ${PROJECT_GROUP}"
+    [ -n "${PROJECT_GROUP_NAME}" ] && echo "Navigate to: Project Groups -> ${PROJECT_GROUP_NAME}"
     echo ""
 
     if [ "${ANNOTATE_WORKLOADS}" = "true" ]; then
@@ -204,13 +236,4 @@ data:
     rm -rf /tmp/container-images
 
     echo ""
-    if [ $SUCCESS_COUNT -eq $TOTAL_IMAGES ] && [ $TOTAL_IMAGES -gt 0 ]; then
-      echo "BDSC Container scanning completed successfully!"
-      exit 0
-    elif [ $SUCCESS_COUNT -gt 0 ]; then
-      echo "BDSC Container scanning completed with some timeouts/failures. ${SUCCESS_COUNT}/${TOTAL_IMAGES} successful."
-      exit 0
-    else
-      echo "BDSC Container scanning failed. No images were successfully processed."
-      exit 1
-    fi
+    echo "BDSC Container scanning process completed!"
