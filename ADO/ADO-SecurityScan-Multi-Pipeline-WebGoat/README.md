@@ -180,36 +180,85 @@ Here's what a successful modular pipeline execution looks like in Azure DevOps:
 - Stage 3: Security scan results and reports
 - All stages: Pipeline logs and debugging information
 
-## 🛡️ Security Integration Benefits
+## 🔒 Security Scanning Features
 
-This modular approach provides several advantages for DevSecOps training:
+### Black Duck SCA Integration
 
-### **Black Duck SCA Integration**
-- **Source Analysis**: Package manager and signature scanning of Java dependencies
-- **Container Analysis**: BDSC (Black Duck Secure Container) scanning of final Docker image
-- **Results Integration**: SARIF reports automatically published to Azure DevOps Security tab
+**Full Scan (main/develop branches):**
+- Complete dependency analysis
+- Vulnerability database matching
+- Policy violation reporting
+- Risk assessment dashboard
 
-### **Coverity SAST Integration** 
-- **Static Analysis**: Comprehensive code quality and security vulnerability detection
-- **Pull Request Integration**: Automated PR comments for early feedback
-- **Policy Enforcement**: Configurable policy views for different scan contexts
+**Pull Request Scan:**
+- Incremental scanning for faster feedback
+- Automated PR comments with findings
+- SARIF report generation for GitHub Advanced Security
+- Build status integration
 
-### **Pipeline Integration Features**
-- **Parallel Scanning**: Security scans run concurrently for faster feedback
-- **Fail-Safe Deployment**: Deployment proceeds even if security scans fail
-- **Rich Reporting**: Results appear in Extensions tab, Tests tab, and Pipeline artifacts
-- **Flexible Gating**: Builds marked "succeeded with issues" rather than failed
+**Key Environment Variables:**
+```yaml
+env:
+  DETECT_PROJECT_NAME: $(PROJECT_NAME)
+  DETECT_PROJECT_VERSION_NAME: $(PROJECT_VERSION)
+  DETECT_SELF_UPDATE_DISABLED: "true"
+  DETECT_TOOLS: "SIGNATURE_SCAN"
+```
+
+### Coverity SAST Integration
+
+**Full Scan (main/develop branches):**
+- Complete static analysis of source code
+- Security defect detection
+- Quality metrics collection
+- Stream-based reporting
+
+**Pull Request Scan:**
+- Incremental analysis for new/changed code
+- Automated PR feedback
+- Policy gate enforcement
+- Developer-friendly reporting
+
+**Key Configuration:**
+```yaml
+inputs:
+  COVERITY_PROJECT_NAME: $(PROJECT_NAME)
+  COVERITY_STREAM_NAME: $(PROJECT_NAME)-$(PROJECT_VERSION)
+  coverity_local: true
+  mark_build_status: 'SucceededWithIssues'
+```
+
+## 🚀 Deployment Features
+
+### Docker Image Creation
+- Multi-stage optimized Dockerfile
+- Java 23 runtime with eclipse-temurin base
+- Security-hardened container configuration
+- Health check endpoints included
+
+### Kubernetes Deployment
+- Zero-downtime deployment strategy
+- Resource limits and requests configured
+- NodePort services for external access
+- Comprehensive health monitoring
+
+### WebGoat Application Access
+
+After successful deployment:
+
+- **WebGoat**: `http://[K8S_PUBLIC_IP]:30080/WebGoat/`
+- **WebWolf**: `http://[K8S_PUBLIC_IP]:30090/WebWolf/`
 
 ## 📁 File Structure
 
 ```
 ├── azure-pipelines.yml    # Master pipeline orchestrator
-├── build.yml             # Stage 1: Build WebGoat source
-├── container.yml         # Stage 2: Create Docker container
-├── security.yml          # Stage 3: Security scans (BD SCA + Coverity)
-├── deploy.yml            # Stage 4: Kubernetes deployment
-├── validate.yml          # Stage 5: Health checks and validation
-└── README.md             # This documentation
+├── build.yml              # Stage 1: Build WebGoat source
+├── container.yml          # Stage 2: Create Docker container
+├── security.yml           # Stage 3: Security scans (BD SCA + Coverity)
+├── deploy.yml             # Stage 4: Kubernetes deployment
+├── validate.yml           # Stage 5: Health checks and validation
+└── README.md              # This documentation
 ```
 
 ## 🎯 Training Benefits
@@ -266,12 +315,21 @@ mark_build_status: 'SucceededWithIssues'
 This modular pipeline supports various training scenarios:
 
 1. **Security Scan Deep Dive**: Focus only on `security.yml` for detailed scan configuration
-2. **Container Security**: Examine how `container.yml` and `security.yml` work together
-3. **CI/CD Integration**: Show how security fits into the overall pipeline flow
+2. **Container Security**: Examine how `BDSC` and `binary scans` work together
+3. **CI/CD Integration**: Show how security fits into the overall pipeline flow, see how the discrete pipelines interact with each other
 4. **Tool Comparison**: Compare Black Duck SCA vs Coverity SAST results
 5. **Pipeline Optimization**: Demonstrate parallel vs sequential scan execution
 
+## 🔗 References
+
+- [Black Duck Security Scan Extension](https://marketplace.visualstudio.com/items?itemName=synopsys-task.synopsys-security-scan-task)
+- [WebGoat Project](https://github.com/WebGoat/WebGoat)
+- [Azure DevOps YAML Schema](https://docs.microsoft.com/en-us/azure/devops/pipelines/yaml-schema)
+- [Kubernetes NodePort Services](https://kubernetes.io/docs/concepts/services-networking/service/#nodeport)
+
 ---
+**Repository**: ADO-SecurityScan-Multi-Pipeline-WebGoat  
 **Maintained by**: Steve R. Smith  
-**Purpose**: Azure DevOps Black Duck Pipeline Integration Training  
-**Audience**: Development teams implementing DevSecOps practices
+**Purpose**: Azure DevOps Black Duck Pipeline Integration Training using the Security Scan Task 
+**Audience**: Black Duck Customer Development teams implementing DevSecOps practices
+**Last Updated**: September 10, 2025  
