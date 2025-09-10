@@ -1,0 +1,250 @@
+# =============================================================================
+# STAGE 4 TEMPLATE: DEPLOY VIA KUBERNETES
+# =============================================================================
+# Purpose: Deploys WebGoat container to Kubernetes cluster with NodePort services
+# Inputs: WebGoatContainerImage artifact from Stage 2
+# Outputs: Running WebGoat deployment accessible via public IPs
+# Dependencies: BuildContainer, SecurityScans (proceeds even if security scans fail)
+# =============================================================================
+
+parameters:
+- name: dependsOn
+  type: object
+  default: []
+
+stages:
+- stage: DeployKubernetes
+  displayName: 'Stage 4: Deploy via Kubernetes'
+  dependsOn: ${{ parameters.dependsOn }}
+  condition: succeededOrFailed()  # Deploy even if security scans fail
+  jobs:
+  - job: KubernetesDeployment
+    displayName: 'Deploy WebGoat to Kubernetes'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Download SSH key
+    - task: DownloadSecureFile@1
+      displayName: 'Download SSH Key'
+      name: sshkey
+      inputs:
+        secureFile: 'steve-pem'
+
+    # Download container image
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Container Image'
+      inputs:
+        artifact: 'WebGoatContainerImage'
+        path: '$(Build.SourcesDirectory)'
+
+    # Transfer image to Kubernetes server
+    - script: |
+        set -e
+        
+        TAR_FILE="webgoat-$(Build.BuildId).tar"
+        
+        echo "=== Setting up SSH and transferring image ==="
+        cp $(sshkey.secureFilePath) steve.pem
+        chmod 400 steve.pem
+        
+        if [ ! -f "${TAR_FILE}" ]; then
+            echo "ERROR: Container image tar file not found: ${TAR_FILE}"
+            exit 1
+        fi
+        
+        echo "Transferring ${TAR_FILE} to Kubernetes server..."
+        scp -o StrictHostKeyChecking=no -i steve.pem ${TAR_FILE} ubuntu@$(K8S_SERVER_IP):/tmp/
+        
+        echo "Loading image on Kubernetes server..."
+        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+          sudo microk8s ctr image import /tmp/${TAR_FILE}
+          
+          echo 'Verifying image import...'
+          sudo microk8s ctr images list | grep 'webgoat.*$(Build.BuildId)' || echo 'ERROR: Build ID not found in imported images!'
+          sudo microk8s ctr images list | grep webgoat
+          
+          rm -f /tmp/${TAR_FILE}
+          echo 'Image transfer completed!'
+        "
+      displayName: 'Transfer Image to Kubernetes'
+
+    # Clean up existing deployment
+    - script: |
+        echo "=== Kubernetes Deployment Cleanup ==="
+        
+        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+          echo 'Cleaning up existing WebGoat deployment...'
+          kubectl delete deployment webgoat --ignore-not-found=true --grace-period=30
+          kubectl delete service webgoat-service --ignore-not-found=true --grace-period=15
+          
+          echo 'Waiting for cleanup...'
+          sleep 15
+          
+          # Force cleanup if needed
+          if kubectl get pods -l app=webgoat --no-headers 2>/dev/null | grep -q webgoat; then
+            echo 'Force cleaning remaining pods...'
+            kubectl delete pods -l app=webgoat --grace-period=10 --force || true
+            sleep 5
+          fi
+          
+          echo 'Cleanup completed'
+        "
+      displayName: 'Cleanup Existing Deployment'
+
+    # Create and apply deployment
+    - script: |
+        IMAGE_NAME="docker.io/library/webgoat:$(Build.BuildId)"
+        PUBLIC_IP="$(K8S_PUBLIC_IP)"
+        WEBGOAT_PORT="$(WEBGOAT_NODEPORT)"
+        WEBWOLF_PORT="$(WEBWOLF_NODEPORT)"
+        
+        # Create deployment manifest with proven working configuration
+        cat > webgoat-deployment.yaml << EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: webgoat
+          namespace: default
+          labels:
+            app: webgoat
+            version: "$(Build.BuildId)"
+            deployed-by: azure-devops
+            pipeline-stage: "deploy"
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: webgoat
+          template:
+            metadata:
+              labels:
+                app: webgoat
+                version: "$(Build.BuildId)"
+            spec:
+              containers:
+              - name: webgoat
+                image: ${IMAGE_NAME}
+                imagePullPolicy: Never
+                ports:
+                - containerPort: 8080
+                  name: webgoat
+                  protocol: TCP
+                - containerPort: 9090
+                  name: webwolf
+                  protocol: TCP
+                # Proven working resource allocation
+                resources:
+                  requests:
+                    memory: "1Gi"
+                    cpu: "500m"
+                  limits:
+                    memory: "2Gi"
+                    cpu: "1"
+                # Proven working environment variables
+                env:
+                - name: TZ
+                  value: "America/New_York"
+                - name: WEBGOAT_HOST
+                  value: "${PUBLIC_IP}"
+                - name: WEBWOLF_HOST
+                  value: "${PUBLIC_IP}"
+                - name: WEBGOAT_NODEPORT
+                  value: "${WEBGOAT_PORT}"
+                - name: WEBWOLF_NODEPORT
+                  value: "${WEBWOLF_PORT}"
+                # Proven working startup command
+                command: ["java"]
+                args: [
+                  "-Duser.home=/home/webgoat",
+                  "-Dfile.encoding=UTF-8",
+                  "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+                  "--add-opens", "java.base/java.util=ALL-UNNAMED",
+                  "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
+                  "--add-opens", "java.base/java.text=ALL-UNNAMED",
+                  "--add-opens", "java.desktop/java.beans=ALL-UNNAMED",
+                  "--add-opens", "java.desktop/java.awt.font=ALL-UNNAMED",
+                  "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED",
+                  "--add-opens", "java.base/java.io=ALL-UNNAMED",
+                  "-Drunning.in.docker=true",
+                  "-jar", "webgoat.jar",
+                  "--server.address", "0.0.0.0"
+                ]
+                # Proven working health check timing
+                livenessProbe:
+                  httpGet:
+                    path: /WebGoat/actuator/health
+                    port: 8080
+                    scheme: HTTP
+                  initialDelaySeconds: 180
+                  periodSeconds: 30
+                  failureThreshold: 5
+                  timeoutSeconds: 15
+                readinessProbe:
+                  httpGet:
+                    path: /WebGoat/actuator/health
+                    port: 8080
+                    scheme: HTTP
+                  initialDelaySeconds: 120
+                  periodSeconds: 15
+                  failureThreshold: 5
+                  timeoutSeconds: 15
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: webgoat-service
+          namespace: default
+          labels:
+            app: webgoat
+            pipeline-stage: "deploy"
+        spec:
+          selector:
+            app: webgoat
+          ports:
+          - port: 8080
+            targetPort: 8080
+            protocol: TCP
+            name: webgoat
+            nodePort: ${WEBGOAT_PORT}
+          - port: 9090
+            targetPort: 9090
+            protocol: TCP
+            name: webwolf
+            nodePort: ${WEBWOLF_PORT}
+          type: NodePort
+        EOF
+        
+        echo "=== Kubernetes Deployment Manifest ==="
+        echo "Image: ${IMAGE_NAME}"
+        echo "Public IP: ${PUBLIC_IP}"
+        echo "Ports: WebGoat=${WEBGOAT_PORT}, WebWolf=${WEBWOLF_PORT}"
+        
+      displayName: 'Create Deployment Manifest'
+
+    # Apply deployment to Kubernetes
+    - script: |
+        scp -o StrictHostKeyChecking=no -i steve.pem webgoat-deployment.yaml ubuntu@$(K8S_SERVER_IP):/tmp/
+        
+        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+          echo '=== Applying WebGoat Deployment ==='
+          kubectl apply -f /tmp/webgoat-deployment.yaml
+          
+          echo '=== Monitoring Deployment Rollout (5 minute timeout) ==='
+          if kubectl rollout status deployment/webgoat --timeout=300s; then
+            echo 'SUCCESS: Deployment rollout completed!'
+          else
+            echo 'TIMEOUT: Deployment rollout taking longer than expected'
+            echo 'Current deployment status:'
+            kubectl get deployment webgoat
+            kubectl get pods -l app=webgoat -o wide
+            echo 'Proceeding to validation stage...'
+          fi
+          
+          echo '=== Current Deployment Status ==='
+          kubectl get deployment webgoat
+          kubectl get service webgoat-service
+          kubectl get pods -l app=webgoat -o wide
+          
+          rm -f /tmp/webgoat-deployment.yaml
+        "
+      displayName: 'Deploy to Kubernetes'
