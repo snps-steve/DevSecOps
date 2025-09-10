@@ -1,0 +1,80 @@
+# =============================================================================
+# MASTER PIPELINE - WebGoat DevSecOps Training Demo
+# =============================================================================
+# Purpose: Orchestrates 5-stage modular pipeline for comprehensive security scanning
+# Architecture: Build → Container → Security → Deploy → Validate
+#
+# Security Scans: 
+# • SCA: package manager, signature, BDSC (Black Duck Secure Container) scanning 
+# • SAST: Coverity security vulnerability detection and code quality analysis
+# • Coverage: Both PR and non-PR scans with full SARIF reporting
+#
+# Results appear in: Extensions tab, Tests tab, Pipeline artifacts, PR comments
+# Gating: No build failures on security findings - builds succeed but marked "succeeded with issues"
+#
+
+trigger:
+- main
+- develop
+
+variables:
+  # Security scan variable groups
+  - group: blackduck-sca-variables
+  - group: coverity-variables
+  
+  # Project configuration
+  - name: PROJECT_NAME
+    value: $(Build.Repository.Name)
+  - name: PROJECT_VERSION
+    value: $(Build.SourceBranchName)
+    
+  # Kubernetes configuration
+  - name: K8S_SERVER_IP
+    value: "172.31.17.121"  # Your MicroK8s server private IP (for SSH)
+  - name: K8S_PUBLIC_IP
+    value: "44.253.226.227"  # Your MicroK8s server public IP (for web access)
+  - name: WEBGOAT_NODEPORT
+    value: "30080"  # NodePort for WebGoat
+  - name: WEBWOLF_NODEPORT
+    value: "30090"  # NodePort for WebWolf
+    
+  # Conditional variable for Coverity policy view
+  - name: COVERITY_VIEW
+    ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+      value: ''
+    ${{ else }}:
+      value: 'Outstanding Issues'
+
+stages:
+# =============================================================================
+# STAGE 1: BUILD WEBGOAT
+# =============================================================================
+- template: build.yml
+
+# =============================================================================
+# STAGE 2: BUILD AND VERIFY DOCKER IMAGE
+# =============================================================================
+- template: container.yml
+  parameters:
+    dependsOn: BuildWebGoat
+
+# =============================================================================
+# STAGE 3: SECURITY SCANS (BLACK DUCK SCA + COVERITY SAST)
+# =============================================================================
+- template: security.yml
+  parameters:
+    dependsOn: [BuildWebGoat, BuildContainer]
+
+# =============================================================================
+# STAGE 4: DEPLOY VIA KUBERNETES
+# =============================================================================
+- template: deploy.yml
+  parameters:
+    dependsOn: [BuildContainer, SecurityScans]
+
+# =============================================================================
+# STAGE 5: VALIDATION
+# =============================================================================
+- template: validate.yml
+  parameters:
+    dependsOn: DeployKubernetes
