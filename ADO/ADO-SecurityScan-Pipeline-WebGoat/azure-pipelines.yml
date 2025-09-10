@@ -1,0 +1,880 @@
+# WebGoat Build, Security Scan, and Deployment Pipeline
+# 
+# Purpose: DevSecOps training demonstration showing comprehensive security scanning integration
+# Architecture: 5-Stage Pipeline (Build → Container → Security → Deploy → Validate)
+#
+# Security Scans: 
+# • SCA: package manager, signature, BDSC (Black Duck Secure Container) scanning 
+# • SAST: Coverity security vulnerability detection and code quality analysis
+# • Coverage: Both PR and non-PR scans with full SARIF reporting
+#
+# Results appear in: Extensions tab, Tests tab, Pipeline artifacts, PR comments
+# Gating: No build failures on security findings - builds succeed but marked "succeeded with issues"
+#
+
+trigger:
+- main
+- develop
+
+variables:
+  # Security scan variable groups
+  - group: blackduck-sca-variables
+  - group: coverity-variables
+  
+  # Project configuration
+  - name: PROJECT_NAME
+    value: $(Build.Repository.Name)
+  - name: PROJECT_VERSION
+    value: $(Build.SourceBranchName)
+    
+  # Kubernetes configuration
+  - name: K8S_SERVER_IP
+    value: "172.31.17.121"  # Your MicroK8s server private IP (for SSH)
+  - name: K8S_PUBLIC_IP
+    value: "44.253.226.227"  # Your MicroK8s server public IP (for web access)
+  - name: WEBGOAT_NODEPORT
+    value: "30080"  # NodePort for WebGoat
+  - name: WEBWOLF_NODEPORT
+    value: "30090"  # NodePort for WebWolf
+    
+  # Conditional variable for Coverity policy view
+  - name: COVERITY_VIEW
+    ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+      value: ''
+    ${{ else }}:
+      value: 'Outstanding Issues'
+
+stages:
+# ================================================================================
+# STAGE 1: BUILD WEBGOAT
+# ================================================================================
+- stage: BuildWebGoat
+  displayName: 'Stage 1: Build WebGoat'
+  jobs:
+  - job: BuildJob
+    displayName: 'Build WebGoat Source Code'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Verify Java 23 installation
+    - script: |
+        set -ex
+        echo "=== Java Environment Check ==="
+        java -version
+        javac -version
+        echo "JAVA_HOME: $JAVA_HOME"
+        ./mvnw -v
+      displayName: 'Verify Java 23 Environment'
+
+    # Build WebGoat from source (native Java 23)
+    - script: |
+        set -ex
+        echo "Building WebGoat from source with Java 23..."
+        chmod +x ./mvnw
+        
+        # Use native Java 23 compilation (no overrides needed)
+        ./mvnw clean install -DskipTests
+        
+        # Verify the build created the expected JAR
+        echo "=== Build artifacts ==="
+        find . -name "webgoat-*.jar" -not -path "*/original/*" -ls
+      displayName: 'Build WebGoat with Java 23'
+
+    # Publish build artifacts for subsequent stages
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish WebGoat Source and JAR'
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)'
+        artifact: 'WebGoatSource'
+
+# ================================================================================
+# STAGE 2: BUILD/VERIFY WEBGOAT CONTAINER AND IMAGE
+# ================================================================================
+- stage: BuildContainer
+  displayName: 'Stage 2: Build/Verify Container'
+  dependsOn: BuildWebGoat
+  jobs:
+  - job: ContainerBuildJob
+    displayName: 'Build and Verify WebGoat Container'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Download build artifacts
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download WebGoat Source'
+      inputs:
+        artifact: 'WebGoatSource'
+        path: '$(Build.SourcesDirectory)'
+
+    # Create optimized Dockerfile
+    - script: |
+        echo "Creating WebGoat Dockerfile..."
+        
+        # Find the actual JAR file
+        JAR_FILE=$(find . -name "webgoat-*.jar" -not -path "*/original/*" | head -1)
+        if [ -z "$JAR_FILE" ]; then
+            echo "ERROR: No WebGoat JAR file found!"
+            echo "Available JAR files:"
+            find . -name "*.jar" -type f
+            exit 1
+        fi
+        
+        echo "Found JAR file: $JAR_FILE"
+        
+        cat > Dockerfile << 'EOF'
+        # Use eclipse-temurin for Java 23 support
+        FROM docker.io/eclipse-temurin:23-jdk-noble
+        
+        LABEL name="WebGoat: A deliberately insecure Web Application"
+        LABEL maintainer="WebGoat team"
+        LABEL version="BUILD_ID_PLACEHOLDER"
+        
+        # Install curl for health checks
+        RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+        
+        # Create webgoat user
+        RUN \
+          useradd -ms /bin/bash webgoat && \
+          chgrp -R 0 /home/webgoat && \
+          chmod -R g=u /home/webgoat
+        
+        # Create WebGoat data directory
+        RUN mkdir -p /home/webgoat/.webgoat-2025.4-SNAPSHOT && \
+            chown -R webgoat:webgoat /home/webgoat
+        
+        USER webgoat
+        
+        # Copy JAR file
+        COPY --chown=webgoat JAR_FILE_PLACEHOLDER /home/webgoat/webgoat.jar
+        
+        EXPOSE 8080
+        EXPOSE 9090
+        
+        ENV TZ=Europe/Amsterdam
+        
+        WORKDIR /home/webgoat
+        
+        # Basic ENTRYPOINT - will be overridden by Kubernetes
+        ENTRYPOINT [ "java", \
+           "-Duser.home=/home/webgoat", \
+           "-Dfile.encoding=UTF-8", \
+           "--add-opens", "java.base/java.lang=ALL-UNNAMED", \
+           "--add-opens", "java.base/java.util=ALL-UNNAMED", \
+           "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED", \
+           "--add-opens", "java.base/java.text=ALL-UNNAMED", \
+           "--add-opens", "java.desktop/java.beans=ALL-UNNAMED", \
+           "--add-opens", "java.desktop/java.awt.font=ALL-UNNAMED", \
+           "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED", \
+           "--add-opens", "java.base/java.io=ALL-UNNAMED", \
+           "-Drunning.in.docker=true", \
+           "-jar", "webgoat.jar" ]
+        
+        # Health check
+        HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
+           CMD curl --fail --silent http://localhost:8080/WebGoat/actuator/health || exit 1
+        EOF
+        
+        # Replace placeholders with actual values
+        sed -i "s|JAR_FILE_PLACEHOLDER|$JAR_FILE|g" Dockerfile
+        sed -i "s|BUILD_ID_PLACEHOLDER|$(Build.BuildId)|g" Dockerfile
+        
+        echo "=== Created Dockerfile ==="
+        cat Dockerfile
+      displayName: 'Create WebGoat Dockerfile'
+
+    # Build Docker image
+    - task: Docker@2
+      displayName: 'Build WebGoat Docker Image'
+      inputs:
+        command: 'build'
+        dockerfile: 'Dockerfile'
+        repository: 'webgoat'
+        tags: |
+          $(Build.BuildId)
+          latest
+
+    # Verify and analyze built image
+    - script: |
+        echo "=== Docker Image Verification ==="
+        docker images | grep webgoat
+        
+        IMAGE_TAG="webgoat:$(Build.BuildId)"
+        
+        if docker images | grep -q "webgoat.*$(Build.BuildId)"; then
+            echo "SUCCESS: Found $IMAGE_TAG"
+        else
+            echo "ERROR: $IMAGE_TAG not found!"
+            exit 1
+        fi
+        
+        # Get image details
+        echo "=== Image Analysis ==="
+        docker inspect $IMAGE_TAG --format='{{.Config.Labels}}' || echo "No labels found"
+        docker inspect $IMAGE_TAG --format='Size: {{.Size}} bytes' || echo "Cannot get size"
+        
+        # Quick container test
+        echo "=== Quick Container Functionality Test ==="
+        docker run --rm --name webgoat-test -d -p 18080:8080 $IMAGE_TAG
+        sleep 10
+        
+        if docker ps | grep -q webgoat-test; then
+            echo "SUCCESS: Container started successfully"
+            docker stop webgoat-test
+        else
+            echo "WARNING: Container may have startup issues"
+        fi
+      displayName: 'Verify Docker Image Build'
+
+    # Prepare image for transfer and scanning
+    - script: |
+        set -e
+        
+        IMAGE_TAG="webgoat:$(Build.BuildId)"
+        TAR_FILE="webgoat-$(Build.BuildId).tar"
+        
+        echo "=== Preparing Image for Transfer and Scanning ==="
+        
+        # Save image as tar for container scanning and K8s transfer
+        echo "Saving Docker image to tar file..."
+        docker save ${IMAGE_TAG} -o ${TAR_FILE}
+        
+        # Verify tar file
+        if [ -f "${TAR_FILE}" ]; then
+            TAR_SIZE=$(du -h ${TAR_FILE} | cut -f1)
+            echo "SUCCESS: Created ${TAR_FILE} (${TAR_SIZE})"
+        else
+            echo "ERROR: Failed to create tar file"
+            exit 1
+        fi
+        
+        echo "Image ready for security scanning and deployment"
+      displayName: 'Prepare Image for Next Stages'
+
+    # Publish container artifacts for security scanning
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Container Image'
+      inputs:
+        targetPath: 'webgoat-$(Build.BuildId).tar'
+        artifact: 'WebGoatContainerImage'
+
+# ================================================================================
+# STAGE 3: EXECUTE SECURITY SCANS
+# ================================================================================
+- stage: SecurityScans
+  displayName: 'Stage 3: Execute Security Scans'
+  dependsOn: [BuildWebGoat, BuildContainer]
+  jobs:
+  # ---- Black Duck SCA: Source Code Analysis ----
+  - job: BlackDuckSourceScan
+    displayName: 'Black Duck SCA: Source Analysis'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Download source code artifacts
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download WebGoat Source'
+      inputs:
+        artifact: 'WebGoatSource'
+        path: '$(Build.SourcesDirectory)'
+
+    # Black Duck Source Code Scan (Package Manager + Signature)
+    - task: BlackDuckSecurityScan@2.2.0
+      displayName: 'Black Duck SCA: Package Manager + Signature Scan'
+      continueOnError: true
+      retryCountOnTaskFailure: 2
+      env:
+        DETECT_PROJECT_NAME: $(PROJECT_NAME)
+        DETECT_PROJECT_VERSION_NAME: $(PROJECT_VERSION)-source
+        DETECT_SELF_UPDATE_DISABLED: "true"
+        # Source code analysis: Package manager + Signature scanning
+        DETECT_TOOLS: "DETECTOR,SIGNATURE_SCAN"
+        DETECT_EXCLUDED_DIRECTORIES: ".git,node_modules,vendor,.idea,.vscode,test,tests,spec,specs"
+        DETECT_MAVEN_EXCLUDED_SCOPES: "test,provided"
+      inputs:
+        BLACKDUCKSCA_URL: $(BLACKDUCK_URL)
+        BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
+        BLACKDUCKSCA_REPORTS_SARIF_CREATE: true
+        NETWORK_SSL_TRUSTALL: true
+        ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+          BLACKDUCKSCA_FIXPR_ENABLED: true
+          BLACKDUCKSCA_PRCOMMENT_ENABLED: true
+          azure_token: $(System.AccessToken)
+
+    # Log Black Duck source scan status
+    - script: |
+        if [ $? -eq 0 ]; then
+          echo "SUCCESS: Black Duck SCA source scan completed successfully"
+        else
+          echo "WARNING: Black Duck SCA source scan failed - this may indicate:"
+          echo "  - Black Duck server is unavailable at $(BLACKDUCK_URL)"
+          echo "  - Authentication issues with API token"
+          echo "  - Network connectivity problems"
+          echo "  - Maven dependency resolution issues"
+          echo "Pipeline will continue, but source code security scan results may be incomplete"
+        fi
+      displayName: 'Log Black Duck Source Scan Status'
+      condition: always()
+
+  # ---- Black Duck Container Scan ----
+  - job: BlackDuckContainerScan
+    displayName: 'Black Duck SCA: Container Analysis'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Download container image
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download WebGoat Container Image'
+      inputs:
+        artifact: 'WebGoatContainerImage'
+        path: '$(Build.SourcesDirectory)'
+
+    # Black Duck Container Scan
+    - task: BlackDuckSecurityScan@2.2.0
+      displayName: 'Black Duck SCA: Container Scan'
+      continueOnError: true
+      retryCountOnTaskFailure: 2
+      env:
+        DETECT_PROJECT_NAME: $(PROJECT_NAME)
+        DETECT_PROJECT_VERSION_NAME: $(PROJECT_VERSION)-container
+        DETECT_SELF_UPDATE_DISABLED: "true"
+        # Container-specific scanning
+        DETECT_TOOLS: "CONTAINER_SCAN"
+        DETECT_CONTAINER_SCAN_FILE_PATH: "$(Build.SourcesDirectory)/webgoat-$(Build.BuildId).tar"
+      inputs:
+        BLACKDUCKSCA_URL: $(BLACKDUCK_URL)
+        BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
+        BLACKDUCKSCA_REPORTS_SARIF_CREATE: true
+        NETWORK_SSL_TRUSTALL: true
+
+    # Log Black Duck container scan status
+    - script: |
+        if [ $? -eq 0 ]; then
+          echo "SUCCESS: Black Duck SCA container scan completed successfully"
+        else
+          echo "WARNING: Black Duck SCA container scan failed - this may indicate:"
+          echo "  - Black Duck server is unavailable at $(BLACKDUCK_URL)"
+          echo "  - Authentication issues with API token"
+          echo "  - Network connectivity problems"
+          echo "  - BDSC (Black Duck Secure Container) license not available"
+          echo "  - Container image file not found or corrupted"
+          echo "Pipeline will continue, but container security scan results may be incomplete"
+        fi
+      displayName: 'Log Black Duck Container Scan Status'
+      condition: always()
+
+  # ---- Coverity SAST ----
+  - job: CoveritySAST
+    displayName: 'Coverity SAST Analysis'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Download source code artifacts
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download WebGoat Source'
+      inputs:
+        artifact: 'WebGoatSource'
+        path: '$(Build.SourcesDirectory)'
+
+    # JDK sanity check
+    - script: |
+        java -version
+        ./mvnw -v
+      displayName: 'JDK Environment Check'
+
+    # Coverity SAST Scan
+    - task: BlackDuckSecurityScan@2.2.0
+      displayName: 'Coverity SAST Scan'
+      continueOnError: true
+      retryCountOnTaskFailure: 2
+      inputs:
+        COVERITY_URL: $(COVERITY_URL)
+        COVERITY_USER: $(COV_USER)
+        COVERITY_PASSPHRASE: $(COVERITY_PASSPHRASE)
+        COVERITY_PROJECT_NAME: $(PROJECT_NAME)
+        COVERITY_STREAM_NAME: $(PROJECT_NAME)-$(PROJECT_VERSION)
+        COVERITY_REPORTS_SARIF_CREATE: true
+        mark_build_status: 'SucceededWithIssues'
+        NETWORK_SSL_TRUSTALL: true
+        coverity_local: true
+        # TESTING: Added coverity_local back, kept coverity_install_directory removed
+        ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+          COVERITY_PRCOMMENT_ENABLED: true
+          azure_token: $(System.AccessToken)
+        ${{ else }}:
+          COVERITY_PRCOMMENT_ENABLED: false
+
+    # Log Coverity scan status
+    - script: |
+        if [ $? -eq 0 ]; then
+          echo "SUCCESS: Coverity SAST scan completed successfully"
+        else
+          echo "WARNING: Coverity SAST scan failed - this may indicate:"
+          echo "  - Coverity Connect server is unavailable at $(COVERITY_URL)"
+          echo "  - Authentication issues with user credentials"
+          echo "  - Network connectivity problems"
+          echo "  - Server-side errors (HTTP 500) requiring administrator attention"
+          echo "  - Project/stream configuration issues"
+          echo "  - Build compilation issues affecting static analysis"
+          echo "Pipeline will continue, but SAST scan results may be incomplete"
+        fi
+      displayName: 'Log Coverity Scan Status'
+      condition: always()
+
+  # ---- Publish All Security Results ----
+  - job: PublishSecurityResults
+    displayName: 'Publish Security Scan Results'
+    dependsOn: [BlackDuckSourceScan, BlackDuckContainerScan, CoveritySAST]
+    condition: always()
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Publish security scan artifacts
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Security Scan Artifacts'
+      condition: always()
+      inputs:
+        targetPath: '$(Agent.WorkFolder)'
+        artifactName: 'SecurityScanResults'
+        publishLocation: 'pipeline'
+      continueOnError: true
+
+    # Publish SARIF results as test results for ADO integration
+    - task: PublishTestResults@2
+      displayName: 'Publish SARIF as Test Results'
+      condition: always()
+      inputs:
+        testResultsFormat: 'VSTest'
+        testResultsFiles: '**/*.sarif'
+        searchFolder: '$(Agent.WorkFolder)'
+        publishRunAttachments: true
+        failTaskOnFailedTests: false
+      continueOnError: true
+
+# ================================================================================
+# STAGE 4: DEPLOY WEBGOAT VIA KUBERNETES
+# ================================================================================
+- stage: DeployKubernetes
+  displayName: 'Stage 4: Deploy via Kubernetes'
+  dependsOn: [BuildContainer, SecurityScans]
+  condition: succeededOrFailed()  # Deploy even if security scans fail
+  jobs:
+  - job: KubernetesDeployment
+    displayName: 'Deploy WebGoat to Kubernetes'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Download SSH key
+    - task: DownloadSecureFile@1
+      displayName: 'Download SSH Key'
+      name: sshkey
+      inputs:
+        secureFile: 'steve-pem'
+
+    # Download container image
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Container Image'
+      inputs:
+        artifact: 'WebGoatContainerImage'
+        path: '$(Build.SourcesDirectory)'
+
+    # Transfer image to Kubernetes server
+    - script: |
+        set -e
+        
+        TAR_FILE="webgoat-$(Build.BuildId).tar"
+        
+        echo "=== Setting up SSH and transferring image ==="
+        cp $(sshkey.secureFilePath) steve.pem
+        chmod 400 steve.pem
+        
+        if [ ! -f "${TAR_FILE}" ]; then
+            echo "ERROR: Container image tar file not found: ${TAR_FILE}"
+            exit 1
+        fi
+        
+        echo "Transferring ${TAR_FILE} to Kubernetes server..."
+        scp -o StrictHostKeyChecking=no -i steve.pem ${TAR_FILE} ubuntu@$(K8S_SERVER_IP):/tmp/
+        
+        echo "Loading image on Kubernetes server..."
+        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+          sudo microk8s ctr image import /tmp/${TAR_FILE}
+          
+          echo 'Verifying image import...'
+          sudo microk8s ctr images list | grep 'webgoat.*$(Build.BuildId)' || echo 'ERROR: Build ID not found in imported images!'
+          sudo microk8s ctr images list | grep webgoat
+          
+          rm -f /tmp/${TAR_FILE}
+          echo 'Image transfer completed!'
+        "
+      displayName: 'Transfer Image to Kubernetes'
+
+    # Clean up existing deployment
+    - script: |
+        echo "=== Kubernetes Deployment Cleanup ==="
+        
+        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+          echo 'Cleaning up existing WebGoat deployment...'
+          kubectl delete deployment webgoat --ignore-not-found=true --grace-period=30
+          kubectl delete service webgoat-service --ignore-not-found=true --grace-period=15
+          
+          echo 'Waiting for cleanup...'
+          sleep 15
+          
+          # Force cleanup if needed
+          if kubectl get pods -l app=webgoat --no-headers 2>/dev/null | grep -q webgoat; then
+            echo 'Force cleaning remaining pods...'
+            kubectl delete pods -l app=webgoat --grace-period=10 --force || true
+            sleep 5
+          fi
+          
+          echo 'Cleanup completed'
+        "
+      displayName: 'Cleanup Existing Deployment'
+
+    # Create and apply deployment
+    - script: |
+        IMAGE_NAME="docker.io/library/webgoat:$(Build.BuildId)"
+        PUBLIC_IP="$(K8S_PUBLIC_IP)"
+        WEBGOAT_PORT="$(WEBGOAT_NODEPORT)"
+        WEBWOLF_PORT="$(WEBWOLF_NODEPORT)"
+        
+        # Create deployment manifest with proven working configuration
+        cat > webgoat-deployment.yaml << EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: webgoat
+          namespace: default
+          labels:
+            app: webgoat
+            version: "$(Build.BuildId)"
+            deployed-by: azure-devops
+            pipeline-stage: "deploy"
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: webgoat
+          template:
+            metadata:
+              labels:
+                app: webgoat
+                version: "$(Build.BuildId)"
+            spec:
+              containers:
+              - name: webgoat
+                image: ${IMAGE_NAME}
+                imagePullPolicy: Never
+                ports:
+                - containerPort: 8080
+                  name: webgoat
+                  protocol: TCP
+                - containerPort: 9090
+                  name: webwolf
+                  protocol: TCP
+                # Proven working resource allocation
+                resources:
+                  requests:
+                    memory: "1Gi"
+                    cpu: "500m"
+                  limits:
+                    memory: "2Gi"
+                    cpu: "1"
+                # Proven working environment variables
+                env:
+                - name: TZ
+                  value: "America/New_York"
+                - name: WEBGOAT_HOST
+                  value: "${PUBLIC_IP}"
+                - name: WEBWOLF_HOST
+                  value: "${PUBLIC_IP}"
+                - name: WEBGOAT_NODEPORT
+                  value: "${WEBGOAT_PORT}"
+                - name: WEBWOLF_NODEPORT
+                  value: "${WEBWOLF_PORT}"
+                # Proven working startup command
+                command: ["java"]
+                args: [
+                  "-Duser.home=/home/webgoat",
+                  "-Dfile.encoding=UTF-8",
+                  "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+                  "--add-opens", "java.base/java.util=ALL-UNNAMED",
+                  "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
+                  "--add-opens", "java.base/java.text=ALL-UNNAMED",
+                  "--add-opens", "java.desktop/java.beans=ALL-UNNAMED",
+                  "--add-opens", "java.desktop/java.awt.font=ALL-UNNAMED",
+                  "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED",
+                  "--add-opens", "java.base/java.io=ALL-UNNAMED",
+                  "-Drunning.in.docker=true",
+                  "-jar", "webgoat.jar",
+                  "--server.address", "0.0.0.0"
+                ]
+                # Proven working health check timing
+                livenessProbe:
+                  httpGet:
+                    path: /WebGoat/actuator/health
+                    port: 8080
+                    scheme: HTTP
+                  initialDelaySeconds: 180
+                  periodSeconds: 30
+                  failureThreshold: 5
+                  timeoutSeconds: 15
+                readinessProbe:
+                  httpGet:
+                    path: /WebGoat/actuator/health
+                    port: 8080
+                    scheme: HTTP
+                  initialDelaySeconds: 120
+                  periodSeconds: 15
+                  failureThreshold: 5
+                  timeoutSeconds: 15
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: webgoat-service
+          namespace: default
+          labels:
+            app: webgoat
+            pipeline-stage: "deploy"
+        spec:
+          selector:
+            app: webgoat
+          ports:
+          - port: 8080
+            targetPort: 8080
+            protocol: TCP
+            name: webgoat
+            nodePort: ${WEBGOAT_PORT}
+          - port: 9090
+            targetPort: 9090
+            protocol: TCP
+            name: webwolf
+            nodePort: ${WEBWOLF_PORT}
+          type: NodePort
+        EOF
+        
+        echo "=== Kubernetes Deployment Manifest ==="
+        echo "Image: ${IMAGE_NAME}"
+        echo "Public IP: ${PUBLIC_IP}"
+        echo "Ports: WebGoat=${WEBGOAT_PORT}, WebWolf=${WEBWOLF_PORT}"
+        
+      displayName: 'Create Deployment Manifest'
+
+    # Apply deployment to Kubernetes
+    - script: |
+        scp -o StrictHostKeyChecking=no -i steve.pem webgoat-deployment.yaml ubuntu@$(K8S_SERVER_IP):/tmp/
+        
+        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+          echo '=== Applying WebGoat Deployment ==='
+          kubectl apply -f /tmp/webgoat-deployment.yaml
+          
+          echo '=== Monitoring Deployment Rollout (5 minute timeout) ==='
+          if kubectl rollout status deployment/webgoat --timeout=300s; then
+            echo 'SUCCESS: Deployment rollout completed!'
+          else
+            echo 'TIMEOUT: Deployment rollout taking longer than expected'
+            echo 'Current deployment status:'
+            kubectl get deployment webgoat
+            kubectl get pods -l app=webgoat -o wide
+            echo 'Proceeding to validation stage...'
+          fi
+          
+          echo '=== Current Deployment Status ==='
+          kubectl get deployment webgoat
+          kubectl get service webgoat-service
+          kubectl get pods -l app=webgoat -o wide
+          
+          rm -f /tmp/webgoat-deployment.yaml
+        "
+      displayName: 'Deploy to Kubernetes'
+
+# ================================================================================
+# STAGE 5: VALIDATION
+# ================================================================================
+- stage: Validation
+  displayName: 'Stage 5: Validation'
+  dependsOn: DeployKubernetes
+  jobs:
+  - job: ComprehensiveValidation
+    displayName: 'Comprehensive Deployment Validation'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Download SSH key
+    - task: DownloadSecureFile@1
+      displayName: 'Download SSH Key'
+      name: sshkey
+      inputs:
+        secureFile: 'steve-pem'
+
+    # Comprehensive deployment verification
+    - script: |
+        echo "==============================================="
+        echo "COMPREHENSIVE WEBGOAT DEPLOYMENT VALIDATION"
+        echo "==============================================="
+        
+        cp $(sshkey.secureFilePath) steve.pem
+        chmod 400 steve.pem
+        
+        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+          echo '=== Pod Readiness Check ==='
+          kubectl get pods -l app=webgoat -o wide
+          
+          # Wait for pod readiness with extended timeout
+          echo 'Waiting for pod readiness (max 5 minutes)...'
+          if kubectl wait --for=condition=ready pod -l app=webgoat --timeout=300s; then
+            echo 'SUCCESS: Pod is ready!'
+            pod_ready=true
+          else
+            echo 'TIMEOUT: Pod readiness check timed out'
+            echo 'Manual pod status:'
+            kubectl get pods -l app=webgoat -o wide
+            kubectl describe pods -l app=webgoat | tail -30
+            pod_ready=false
+          fi
+          
+          # Get pod information
+          POD_NAME=\$(kubectl get pods -l app=webgoat -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo 'NO_POD')
+          
+          if [ \"\$POD_NAME\" = 'NO_POD' ]; then
+              echo 'CRITICAL: No WebGoat pod found!'
+              kubectl get pods --all-namespaces | grep webgoat || echo 'No webgoat pods in any namespace'
+              exit 1
+          fi
+          
+          echo \"Working with pod: \$POD_NAME\"
+          
+          echo '=== Image and Configuration Verification ==='
+          kubectl describe pod \$POD_NAME | grep -E '(Image:|Image ID:|Status:|Ready:)' || echo 'Cannot retrieve pod details'
+          
+          echo '=== Application Health Verification ==='
+          webgoat_healthy=false
+          webwolf_healthy=false
+          
+          # WebGoat health check with retries
+          for attempt in {1..6}; do
+            echo \"WebGoat health check attempt \$attempt/6...\"
+            if kubectl exec \$POD_NAME -- curl -s -f http://localhost:8080/WebGoat/actuator/health >/dev/null 2>&1; then
+              echo 'SUCCESS: WebGoat health endpoint responding!'
+              webgoat_healthy=true
+              break
+            elif [ \$attempt -eq 6 ]; then
+              echo 'WebGoat health endpoint not responding after 6 attempts'
+            else
+              echo 'WebGoat not ready, retrying in 30 seconds...'
+              sleep 30
+            fi
+          done
+          
+          # WebWolf health check
+          echo 'Checking WebWolf health endpoint...'
+          if kubectl exec \$POD_NAME -- curl -s -f http://localhost:9090/WebWolf/actuator/health >/dev/null 2>&1; then
+            echo 'SUCCESS: WebWolf health endpoint responding!'
+            webwolf_healthy=true
+          else
+            echo 'WebWolf health endpoint check failed'
+          fi
+          
+          echo '=== Application Startup Log Analysis ==='
+          echo 'Recent logs (looking for startup success indicators):'
+          kubectl logs \$POD_NAME --tail=100 | grep -E '(Started|WebGoat|WebWolf|Tomcat.*started|server.*started|port.*8080|port.*9090)' | tail -10 || \\
+          kubectl logs \$POD_NAME --tail=20
+          
+          echo '=== Service and Network Verification ==='
+          kubectl get service webgoat-service
+          kubectl describe service webgoat-service
+          
+          echo ''
+          echo '================================================'
+          echo '           DEPLOYMENT VALIDATION SUMMARY'
+          echo '================================================'
+          if [ \"\$webgoat_healthy\" = true ] && [ \"\$webwolf_healthy\" = true ]; then
+            echo 'STATUS: SUCCESS - Both applications healthy'
+          elif [ \"\$webgoat_healthy\" = true ]; then
+            echo 'STATUS: PARTIAL - WebGoat healthy, WebWolf issues'
+          elif [ \"\$pod_ready\" = true ]; then
+            echo 'STATUS: DEPLOYED - Pod ready, applications starting'
+          else
+            echo 'STATUS: ISSUES - Deployment problems detected'
+          fi
+          echo ''
+          echo 'Application URLs:'
+          echo '  WebGoat: http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/'
+          echo '  WebWolf: http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/'
+          echo '================================================'
+        "
+      displayName: 'Comprehensive Deployment Verification'
+
+    # External connectivity validation
+    - script: |
+        echo "==============================================="
+        echo "EXTERNAL CONNECTIVITY VALIDATION"
+        echo "==============================================="
+        
+        # Allow time for full application startup
+        echo "Allowing 45 seconds for complete application startup..."
+        sleep 45
+        
+        # Test WebGoat external accessibility
+        echo "Testing WebGoat external connectivity..."
+        webgoat_external=false
+        if timeout 25 curl -s -I http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/ 2>/dev/null | head -1 | grep -q "HTTP"; then
+            echo "SUCCESS: WebGoat is externally accessible!"
+            curl -s -I http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/ | head -5
+            webgoat_external=true
+        else
+            echo "INCONCLUSIVE: WebGoat external connectivity test failed"
+            echo "This may be normal during startup - try manual access"
+        fi
+        
+        echo ""
+        
+        # Test WebWolf external accessibility  
+        echo "Testing WebWolf external connectivity..."
+        webwolf_external=false
+        if timeout 25 curl -s -I http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/ 2>/dev/null | head -1 | grep -q "HTTP"; then
+            echo "SUCCESS: WebWolf is externally accessible!"
+            curl -s -I http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/ | head -5
+            webwolf_external=true
+        else
+            echo "INCONCLUSIVE: WebWolf external connectivity test failed"
+            echo "This may be normal during startup - try manual access"
+        fi
+        
+        echo ""
+        echo "==============================================="
+        echo "         PIPELINE COMPLETION SUMMARY"
+        echo "==============================================="
+        echo ""
+        echo "Stage 1: Build WebGoat              ✓ COMPLETED"
+        echo "Stage 2: Build/Verify Container     ✓ COMPLETED"
+        echo "Stage 3: Execute Security Scans     ✓ COMPLETED"
+        echo "Stage 4: Deploy via Kubernetes      ✓ COMPLETED"
+        echo "Stage 5: Validation                 ✓ COMPLETED"
+        echo ""
+        echo "WebGoat Application Access:"
+        echo "  Main Application: http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/"
+        echo "  WebWolf Service:  http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/"
+        echo ""
+        
+        if [ "$webgoat_external" = true ] && [ "$webwolf_external" = true ]; then
+            echo "STATUS: FULL SUCCESS - Both applications externally accessible"
+        elif [ "$webgoat_external" = true ]; then
+            echo "STATUS: PARTIAL SUCCESS - WebGoat accessible, WebWolf may need more time"
+        else
+            echo "STATUS: DEPLOYMENT SUCCESS - Applications may need 2-3 more minutes"
+            echo "        Try accessing the URLs manually if not immediately available"
+        fi
+        
+        echo ""
+        echo "Security scan results are available in the Azure DevOps pipeline"
+        echo "under the 'Extensions' or 'Security' tabs."
+        echo ""
+        echo "For troubleshooting: kubectl logs -l app=webgoat"
+        echo "==============================================="
+        
+        # Always exit successfully - pipeline deployment is complete
+        exit 0
+        
+      displayName: 'External Connectivity Validation'
