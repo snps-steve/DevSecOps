@@ -216,124 +216,59 @@ After successful deployment:
 - **WebGoat**: `http://[K8S_PUBLIC_IP]:30080/WebGoat/`
 - **WebWolf**: `http://[K8S_PUBLIC_IP]:30090/WebWolf/`
 
-Default credentials: `user/password` (for training purposes)
+## 📁 File Structure
 
-## 📋 Usage Instructions
-
-### 1. Repository Setup
-```bash
-git clone https://github.com/WebGoat/WebGoat.git
-cd WebGoat
-# Copy azure-pipelines.yml to your repository
+```
+├── azure-pipelines.yml    # Pipelinescript
+└── README.md              # This documentation
 ```
 
-### 2. Configure Variable Groups
-- Navigate to Azure DevOps → Pipelines → Library
-- Create required variable groups with security tool credentials
-- Mark sensitive values as secrets
+## 🎯 Training Benefits
 
-### 3. Install Security Scan Extension
-```bash
-# Install from Azure DevOps Marketplace
-az devops extension install --extension-name BlackDuckSecurityScan --publisher-name synopsys-task
-```
+### **For Development Teams**
+- **Modular Learning**: Focus on specific pipeline stages independently
+- **Clear Separation**: Security scanning isolated from build/deploy concerns
+- **Practical Examples**: Real-world integration patterns with actual tools
 
-### 4. Pipeline Execution
+### **For Security Teams**
+- **Security Focus**: Dedicated `security.yml` template for easy review
+- **Tool Integration**: Both SCA and SAST scanning examples
+- **Result Integration**: Multiple ways to consume security scan results
 
-**Automatic Triggers:**
-- Push to `main` or `develop` → Full security scans
-- Pull request creation → Incremental security scans
+### **For DevOps Teams**
+- **Template Reuse**: Individual stages can be reused across projects
+- **Maintenance**: Easier to update specific pipeline components
+- **Debugging**: Isolate issues to specific pipeline stages
 
-**Manual Execution:**
-```bash
-az pipelines run --name "WebGoat-SecurityPipeline" --branch main
-```
+## 📊 Security Scan Configuration
 
-## 🔍 Security Scan Results
-
-### Black Duck SCA Results
-- **Hub Dashboard**: Comprehensive vulnerability management
-- **Policy Violations**: License and security policy enforcement  
-- **Risk Reports**: Executive-level risk assessment
-- **SARIF Output**: Integration with code scanning tools
-
-### Coverity SAST Results
-- **Connect Dashboard**: Defect tracking and workflow
-- **Stream Analysis**: Code quality metrics over time
-- **Policy Views**: Customizable quality gates
-- **PR Integration**: Developer-focused feedback
-
-## 🛠️ Troubleshooting
-
-### Common Issues
-
-#### Build Failures
-```bash
-# Java version verification
-java -version
-./mvnw -v
-
-# Check Maven wrapper permissions
-chmod +x ./mvnw
-```
-
-#### Security Scan Failures
-```bash
-# Verify connectivity
-curl -k $BLACKDUCK_URL/api/tokens/authenticate
-curl -k $COVERITY_URL/api/ping
-
-# Check agent capabilities
-az pipelines agent list --pool-name "Self-Hosted ADO Agent"
-```
-
-#### Deployment Issues
-```bash
-# Verify Kubernetes connectivity
-kubectl cluster-info
-kubectl get nodes
-
-# Check NodePort availability
-kubectl get services -o wide
-```
-
-### Debug Commands
-
-**Pipeline Debugging:**
+### **Black Duck SCA Settings**
 ```yaml
-# Add to pipeline for troubleshooting
-- script: |
-    echo "=== Environment Debug ==="
-    env | grep -E "(BLACKDUCK|COVERITY|K8S)" | sort
-    docker info
-    kubectl version --client
-  displayName: 'Debug Environment'
+# Source code scanning
+DETECT_TOOLS: "DETECTOR,SIGNATURE_SCAN"
+DETECT_EXCLUDED_DIRECTORIES: ".git,node_modules,vendor,.idea,.vscode,test,tests,spec,specs"
+
+# Container scanning  
+DETECT_TOOLS: "CONTAINER_SCAN"
+DETECT_CONTAINER_SCAN_FILE_PATH: "$(Build.SourcesDirectory)/webgoat-$(Build.BuildId).tar"
 ```
 
-## 📚 Training Notes
+### **Coverity SAST Settings**
+```yaml
+COVERITY_PROJECT_NAME: $(PROJECT_NAME)
+COVERITY_STREAM_NAME: $(PROJECT_NAME)-$(PROJECT_VERSION)
+coverity_local: true
+mark_build_status: 'SucceededWithIssues'
 
-### Key Learning Objectives
-1. **Security Scan Task Configuration** - Hands-on setup and configuration
-2. **Pipeline Integration Patterns** - Best practices for CI/CD security
-3. **Result Interpretation** - Understanding scan outputs and remediation
-4. **Policy Management** - Configuring organizational security policies
+## 🎓 Training Scenarios
 
-### Extension vs. CLI Comparison
+This pipeline supports various training scenarios:
 
-| Aspect | Security Scan Extension | Bridge CLI / Native Tools |
-|--------|------------------------|---------------------------|
-| **Setup** | Azure marketplace install | Manual tool installation |
-| **Configuration** | Task-based YAML | Environment variables |
-| **Authentication** | Built-in token management | Manual credential handling |
-| **Reporting** | Integrated Azure DevOps | External dashboard only |
-| **PR Integration** | Native Azure DevOps | Custom webhook setup |
-
-### Best Practices Demonstrated
-- Parallel security job execution for faster pipelines
-- Conditional scanning logic for different branch types
-- Secure credential management using variable groups
-- Container security with non-root user configuration
-- Infrastructure as Code with Kubernetes manifests
+1. **Security Scan Deep Dive**: Focus on `azure-pipelines.yml` for detailed scan configuration
+2. **Container Security**: Examine how `BDSC` and `binary scans` work together
+3. **CI/CD Integration**: Show how security fits into the overall pipeline flow
+4. **Tool Comparison**: Compare Black Duck SCA vs Coverity SAST results
+5. **Pipeline Optimization**: Demonstrate parallel vs sequential scan execution
 
 ## 🔗 References
 
@@ -344,7 +279,8 @@ kubectl get services -o wide
 
 ---
 
-**Repository**: WebGoat Security Pipeline Demo  
+**Repository**: ADO-SecurityScan-Pipeline-WebGoat 
 **Maintained by**: Steve R. Smith
-**Last Updated**: September 5, 2025  
-**Pipeline Version**: 2.0 
+**Purpose**: Azure DevOps Black Duck Pipeline Integration Training using the Security Scan Task  
+**Audience**: Black Duck Customer Development teams implementing DevSecOps practices
+**Last Updated**: September 10, 2025   
