@@ -1,4 +1,4 @@
-# WebGoat Security Scanning Pipeline
+# Single Azure DevOps Pipeline for WebGoat
 
 A comprehensive Azure DevOps pipeline demonstrating Black Duck SCA and Coverity SAST integration for secure CI/CD workflows. This pipeline builds, scans, and deploys the WebGoat application to showcase enterprise security scanning capabilities.
 
@@ -8,7 +8,6 @@ This repository provides a complete example of integrating security scanning too
 
 - **Black Duck SCA** (Software Composition Analysis) - Open source vulnerability detection
 - **Coverity SAST** (Static Application Security Testing) - Source code vulnerability analysis  
-- **Software Risk Manager** integration capabilities
 - Production-ready deployment to self-hosted Kubernetes infrastructure
 
 ## 📦 Pipeline Structure
@@ -63,26 +62,15 @@ This is one large pipeline with multiple stages.
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-org/webgoat-pipeline-demo.git
-   cd webgoat-pipeline-demo
+   git clone https://github.com/snps-steve/DevSecOps/ADO/ADO-SecurityScan-Pipeline-WebGoat.git
+   cd ADO-SecurityScan-Pipeline-WebGoat/
    ```
 
-2. Configure variable groups in Azure DevOps Library:
-   - `AWS-Credentials`
-      - AWS_ACCESS_KEY_ID (secret)
-      - AWS_ACCOUNT_ID
-      - AWS_SECRET_ACCESS_KEY (secret)    
-   - `blackduck-sca-variables`
-      - BLACKDUCK_API_TOKEN (secret)
-      - BLACKDUCK_URL
-      - BRIDGECLI_LINUX64   
-   - `coverity-variables`
-      - BRIDGECLI_LINUX
-      - COV_USER (secret)
-      - COVERITY_PASSPHRASE (secret)
-      - COVERITY_URL 
+2. Modify the script where you find 'steve-pem'. Change it to whatever SSH key you need to use for your environment (this is what will be used to deploy the application if you use this pipeline script). 
 
-4. Upload your SSH key as a secure file named `steve-pem`.
+3. Upload your SSH key as a secure file and give it the name you used in step 2. 
+
+4. Configure variable groups in Azure DevOps (either the Project or Library). See Pipeline Configuration below.
 
 5. Run the pipeline using the master file:
    ```yaml
@@ -107,27 +95,7 @@ This is one large pipeline with multiple stages.
 3. **Security Tools**
    - Black Duck Hub instance
    - Coverity Connect server
-   - Azure DevOps Security Scan Extension v2.2.0+
-
-### Security Tool Setup
-
-#### Black Duck Configuration
-```bash
-# Required environment variables
-BLACKDUCK_URL=https://your-blackduck-instance.com
-BLACKDUCK_API_TOKEN=your-api-token
-```
-
-#### Coverity Configuration
-```bash
-# Required environment variables  
-COVERITY_URL=https://your-coverity-instance.com
-COV_USER=your-coverity-username
-COVERITY_PASSPHRASE=your-coverity-password
-
-# Local installation path
-COVERITY_INSTALL_DIR=/home/ubuntu/cov-platform
-```
+   - Black Duck Security Scan Extension v2.2.0+ (install from the Marketplace)
 
 ## ⚙️ Pipeline Configuration
 
@@ -135,18 +103,27 @@ COVERITY_INSTALL_DIR=/home/ubuntu/cov-platform
 
 Create these variable groups in Azure DevOps Library:
 
+#### `AWS-Credentials`
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `AWS_ACCESS_KEY_ID` | AWS Access Key | `[secure]` |
+| `AWS_ACCOUNT_ID` | AWS Account ID | `000000000000` |
+| `AWS_SECRET_ACCESS_KEY` | AWS Secret Access Key | `[secure]` |
+
 #### `blackduck-sca-variables`
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `BLACKDUCK_URL` | Black Duck Hub URL | `https://blackduck.company.com` |
 | `BLACKDUCK_API_TOKEN` | API authentication token | `[secure]` |
+| `BLACKDUCK_URL` | Black Duck Hub URL | `https://blackduck.company.com` |
+| `BRIDGECLI_LINUX64` | URL for Bridge | `https://repo.blackduck.com/artifactory/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/latest/bridge-cli-bundle-linux64.zip` |
 
 #### `coverity-variables`  
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `COVERITY_URL` | Coverity Connect URL | `https://coverity.company.com` |
-| `COV_USER` | Coverity username | `build-user` |
+| `BRIDGECLI_LINUX64` | URL for Bridge | `https://repo.blackduck.com/artifactory/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/latest/bridge-cli-bundle-linux64.zip` |
+| `COV_USER` | Coverity username | `[secure]` |
 | `COVERITY_PASSPHRASE` | Coverity password | `[secure]` |
+| `COVERITY_URL` | Coverity Connect URL | `https://coverity.company.com` |
 
 ### Infrastructure Variables
 
