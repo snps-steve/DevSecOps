@@ -1,0 +1,180 @@
+# =============================================================================
+# STAGE 2 TEMPLATE: BUILD AND VERIFY CONTAINER
+# =============================================================================
+# Purpose: Creates Docker container image from built WebGoat JAR
+# Inputs: WebGoatSource artifact from Stage 1
+# Outputs: WebGoatContainerImage artifact (tar file)
+# =============================================================================
+
+parameters:
+- name: dependsOn
+  type: object
+  default: []
+
+stages:
+- stage: BuildContainer
+  displayName: 'Stage 2: Build/Verify Container'
+  dependsOn: ${{ parameters.dependsOn }}
+  jobs:
+  - job: ContainerBuildJob
+    displayName: 'Build and Verify WebGoat Container'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Download build artifacts
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download WebGoat Source'
+      inputs:
+        artifact: 'WebGoatSource'
+        path: '$(Build.SourcesDirectory)'
+
+    # Create optimized Dockerfile
+    - script: |
+        echo "Creating WebGoat Dockerfile..."
+        
+        # Find the actual JAR file
+        JAR_FILE=$(find . -name "webgoat-*.jar" -not -path "*/original/*" | head -1)
+        if [ -z "$JAR_FILE" ]; then
+            echo "ERROR: No WebGoat JAR file found!"
+            echo "Available JAR files:"
+            find . -name "*.jar" -type f
+            exit 1
+        fi
+        
+        echo "Found JAR file: $JAR_FILE"
+        
+        cat > Dockerfile << 'EOF'
+        # Use eclipse-temurin for Java 23 support
+        FROM docker.io/eclipse-temurin:23-jdk-noble
+        
+        LABEL name="WebGoat: A deliberately insecure Web Application"
+        LABEL maintainer="WebGoat team"
+        LABEL version="BUILD_ID_PLACEHOLDER"
+        
+        # Install curl for health checks
+        RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+        
+        # Create webgoat user
+        RUN \
+          useradd -ms /bin/bash webgoat && \
+          chgrp -R 0 /home/webgoat && \
+          chmod -R g=u /home/webgoat
+        
+        # Create WebGoat data directory
+        RUN mkdir -p /home/webgoat/.webgoat-2025.4-SNAPSHOT && \
+            chown -R webgoat:webgoat /home/webgoat
+        
+        USER webgoat
+        
+        # Copy JAR file
+        COPY --chown=webgoat JAR_FILE_PLACEHOLDER /home/webgoat/webgoat.jar
+        
+        EXPOSE 8080
+        EXPOSE 9090
+        
+        ENV TZ=Europe/Amsterdam
+        
+        WORKDIR /home/webgoat
+        
+        # Basic ENTRYPOINT - will be overridden by Kubernetes
+        ENTRYPOINT [ "java", \
+           "-Duser.home=/home/webgoat", \
+           "-Dfile.encoding=UTF-8", \
+           "--add-opens", "java.base/java.lang=ALL-UNNAMED", \
+           "--add-opens", "java.base/java.util=ALL-UNNAMED", \
+           "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED", \
+           "--add-opens", "java.base/java.text=ALL-UNNAMED", \
+           "--add-opens", "java.desktop/java.beans=ALL-UNNAMED", \
+           "--add-opens", "java.desktop/java.awt.font=ALL-UNNAMED", \
+           "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED", \
+           "--add-opens", "java.base/java.io=ALL-UNNAMED", \
+           "-Drunning.in.docker=true", \
+           "-jar", "webgoat.jar" ]
+        
+        # Health check
+        HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
+           CMD curl --fail --silent http://localhost:8080/WebGoat/actuator/health || exit 1
+        EOF
+        
+        # Replace placeholders with actual values
+        sed -i "s|JAR_FILE_PLACEHOLDER|$JAR_FILE|g" Dockerfile
+        sed -i "s|BUILD_ID_PLACEHOLDER|$(Build.BuildId)|g" Dockerfile
+        
+        echo "=== Created Dockerfile ==="
+        cat Dockerfile
+      displayName: 'Create WebGoat Dockerfile'
+
+    # Build Docker image
+    - task: Docker@2
+      displayName: 'Build WebGoat Docker Image'
+      inputs:
+        command: 'build'
+        dockerfile: 'Dockerfile'
+        repository: 'webgoat'
+        tags: |
+          $(Build.BuildId)
+          latest
+
+    # Verify and analyze built image
+    - script: |
+        echo "=== Docker Image Verification ==="
+        docker images | grep webgoat
+        
+        IMAGE_TAG="webgoat:$(Build.BuildId)"
+        
+        if docker images | grep -q "webgoat.*$(Build.BuildId)"; then
+            echo "SUCCESS: Found $IMAGE_TAG"
+        else
+            echo "ERROR: $IMAGE_TAG not found!"
+            exit 1
+        fi
+        
+        # Get image details
+        echo "=== Image Analysis ==="
+        docker inspect $IMAGE_TAG --format='{{.Config.Labels}}' || echo "No labels found"
+        docker inspect $IMAGE_TAG --format='Size: {{.Size}} bytes' || echo "Cannot get size"
+        
+        # Quick container test
+        echo "=== Quick Container Functionality Test ==="
+        docker run --rm --name webgoat-test -d -p 18080:8080 $IMAGE_TAG
+        sleep 10
+        
+        if docker ps | grep -q webgoat-test; then
+            echo "SUCCESS: Container started successfully"
+            docker stop webgoat-test
+        else
+            echo "WARNING: Container may have startup issues"
+        fi
+      displayName: 'Verify Docker Image Build'
+
+    # Prepare image for transfer and scanning
+    - script: |
+        set -e
+        
+        IMAGE_TAG="webgoat:$(Build.BuildId)"
+        TAR_FILE="webgoat-$(Build.BuildId).tar"
+        
+        echo "=== Preparing Image for Transfer and Scanning ==="
+        
+        # Save image as tar for container scanning and K8s transfer
+        echo "Saving Docker image to tar file..."
+        docker save ${IMAGE_TAG} -o ${TAR_FILE}
+        
+        # Verify tar file
+        if [ -f "${TAR_FILE}" ]; then
+            TAR_SIZE=$(du -h ${TAR_FILE} | cut -f1)
+            echo "SUCCESS: Created ${TAR_FILE} (${TAR_SIZE})"
+        else
+            echo "ERROR: Failed to create tar file"
+            exit 1
+        fi
+        
+        echo "Image ready for security scanning and deployment"
+      displayName: 'Prepare Image for Next Stages'
+
+    # Publish container artifacts for security scanning
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Container Image'
+      inputs:
+        targetPath: 'webgoat-$(Build.BuildId).tar'
+        artifact: 'WebGoatContainerImage'
