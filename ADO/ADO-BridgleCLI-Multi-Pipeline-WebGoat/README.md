@@ -1,4 +1,4 @@
-# WebGoat Modular Security Pipeline (Template-Based Architecture)
+# Modular Azure DevOps Bridge CLI Pipeline for WebGoat
 
 A comprehensive Azure DevOps pipeline collection demonstrating **both** Security Scan Task and Bridge CLI integration approaches for Black Duck SCA, BDSC, and Coverity SAST. This modular template system builds, scans, deploys, and validates the WebGoat application using reusable YAML templates designed for DevSecOps training and enterprise adoption.
 
