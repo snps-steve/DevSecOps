@@ -152,16 +152,23 @@ variables:
 ### Black Duck SCA Integration
 
 **Full Scan (main/develop branches):**
-- Complete dependency analysis
-- Vulnerability database matching
-- Policy violation reporting
-- Risk assessment dashboard
+- Complete dependency analysis using Package Manager + Signature scanning
+- Vulnerability database matching and risk assessment
+- Policy violation reporting and compliance tracking
+- **SARIF report generation for Azure DevOps native security integration**
+- Risk assessment dashboard and detailed reporting
 
 **Pull Request Scan:**
-- Incremental scanning for faster feedback
-- Automated PR comments with findings
-- SARIF report generation for GitHub Advanced Security
-- Build status integration
+- Incremental scanning for faster developer feedback
+- **SARIF report generation for Azure DevOps native security integration**
+- **Automated PR comments with security findings** *(PR-specific feature)*
+- **Automated fix suggestions and remediation guidance** *(PR-specific feature)*
+- Build status integration and policy gate enforcement
+
+**Container Scanning (both Full and PR scans):**
+- Black Duck Secure Container (BDSC) analysis of Docker images
+- Base image vulnerability detection and layer-by-layer analysis
+- **SARIF report generation for Azure DevOps native security integration**
 
 **Key Environment Variables:**
 ```yaml
@@ -169,31 +176,52 @@ env:
   DETECT_PROJECT_NAME: $(PROJECT_NAME)
   DETECT_PROJECT_VERSION_NAME: $(PROJECT_VERSION)
   DETECT_SELF_UPDATE_DISABLED: "true"
-  DETECT_TOOLS: "SIGNATURE_SCAN"
+  # Source scanning
+  DETECT_TOOLS: "DETECTOR,SIGNATURE_SCAN"
+  # Container scanning  
+  DETECT_TOOLS: "CONTAINER_SCAN"
 ```
 
 ### Coverity SAST Integration
 
 **Full Scan (main/develop branches):**
-- Complete static analysis of source code
-- Security defect detection
-- Quality metrics collection
-- Stream-based reporting
+- Complete static analysis of source code for security defects
+- Comprehensive security vulnerability detection (CWE/OWASP mapping)
+- **SARIF report generation for Azure DevOps native security integration**
+- Quality metrics collection and technical debt analysis
+- Stream-based reporting and trend analysis
 
 **Pull Request Scan:**
-- Incremental analysis for new/changed code
-- Automated PR feedback
-- Policy gate enforcement
-- Developer-friendly reporting
+- Incremental analysis focusing on new/changed code only
+- **SARIF report generation for Azure DevOps native security integration**
+- **Automated PR feedback with security findings** *(PR-specific feature)*
+- **Policy gate enforcement and build status integration** *(PR-specific feature)*
+- Developer-friendly reporting with remediation guidance
 
 **Key Configuration:**
 ```yaml
 inputs:
   COVERITY_PROJECT_NAME: $(PROJECT_NAME)
   COVERITY_STREAM_NAME: $(PROJECT_NAME)-$(PROJECT_VERSION)
+  COVERITY_REPORTS_SARIF_CREATE: true
   coverity_local: true
   mark_build_status: 'SucceededWithIssues'
 ```
+
+## 🎯 SARIF Integration Benefits
+
+**Universal SARIF Generation** (All scan types - Full, PR, Container):
+- Native integration with Azure DevOps **Tests tab** for security findings
+- Integration with Azure DevOps **Security tab** and compliance dashboards
+- Standardized security finding format across all tools
+- Historical tracking and trend analysis
+- Export capabilities for external security dashboards
+
+**Azure DevOps Native Features:**
+- Security findings appear in pipeline summary
+- Integration with Azure DevOps Advanced Security (if enabled)
+- Work item creation from security findings
+- Policy-based build gates and quality controls
 
 ## 🚀 Deployment Features
 
@@ -219,26 +247,29 @@ After successful deployment:
 ## 📁 File Structure
 
 ```
-├── azure-pipelines.yml    # Pipelinescript
+├── azure-pipelines.yml    # Complete pipeline script
 └── README.md              # This documentation
 ```
 
 ## 🎯 Training Benefits
 
 ### **For Development Teams**
-- **Modular Learning**: Focus on specific pipeline stages independently
-- **Clear Separation**: Security scanning isolated from build/deploy concerns
+- **Stage-by-Stage Learning**: Focus on specific pipeline stages within the single file
+- **Clear Separation**: Security scanning clearly isolated from build/deploy concerns
 - **Practical Examples**: Real-world integration patterns with actual tools
+- **SARIF Understanding**: Learn how security findings integrate with Azure DevOps
 
 ### **For Security Teams**
-- **Security Focus**: Dedicated `security.yml` template for easy review
-- **Tool Integration**: Both SCA and SAST scanning examples
+- **Security Focus**: Security scanning stage clearly marked for easy review
+- **Tool Integration**: Both SCA and SAST scanning examples with SARIF output
 - **Result Integration**: Multiple ways to consume security scan results
+- **Compliance Tracking**: Built-in integration with Azure DevOps security features
 
 ### **For DevOps Teams**
-- **Template Reuse**: Individual stages can be reused across projects
-- **Maintenance**: Easier to update specific pipeline components
-- **Debugging**: Isolate issues to specific pipeline stages
+- **Single File Management**: Easier to understand complete pipeline flow
+- **Maintenance**: All pipeline components in one location
+- **Debugging**: Follow issues through the complete pipeline in one file
+- **Security Integration**: Understand how SARIF flows through Azure DevOps
 
 ## 📊 Security Scan Configuration
 
@@ -247,40 +278,47 @@ After successful deployment:
 # Source code scanning
 DETECT_TOOLS: "DETECTOR,SIGNATURE_SCAN"
 DETECT_EXCLUDED_DIRECTORIES: ".git,node_modules,vendor,.idea,.vscode,test,tests,spec,specs"
+BLACKDUCKSCA_REPORTS_SARIF_CREATE: true
 
 # Container scanning  
 DETECT_TOOLS: "CONTAINER_SCAN"
 DETECT_CONTAINER_SCAN_FILE_PATH: "$(Build.SourcesDirectory)/webgoat-$(Build.BuildId).tar"
+BLACKDUCKSCA_REPORTS_SARIF_CREATE: true
 ```
 
 ### **Coverity SAST Settings**
 ```yaml
 COVERITY_PROJECT_NAME: $(PROJECT_NAME)
 COVERITY_STREAM_NAME: $(PROJECT_NAME)-$(PROJECT_VERSION)
+COVERITY_REPORTS_SARIF_CREATE: true
 coverity_local: true
 mark_build_status: 'SucceededWithIssues'
+```
 
 ## 🎓 Training Scenarios
 
-This pipeline supports various training scenarios:
+This single pipeline supports various training scenarios:
 
-1. **Security Scan Deep Dive**: Focus on `azure-pipelines.yml` for detailed scan configuration
-2. **Container Security**: Examine how `BDSC` and `binary scans` work together
-3. **CI/CD Integration**: Show how security fits into the overall pipeline flow
-4. **Tool Comparison**: Compare Black Duck SCA vs Coverity SAST results
-5. **Pipeline Optimization**: Demonstrate parallel vs sequential scan execution
+1. **Security Scan Deep Dive**: Focus on Stage 3 within `azure-pipelines.yml` for detailed scan configuration
+2. **SARIF Integration**: Examine how security findings flow into Azure DevOps native features
+3. **Container Security**: Show how BDSC and binary scans work together
+4. **CI/CD Integration**: Demonstrate how security fits into the overall pipeline flow
+5. **Tool Comparison**: Compare Black Duck SCA vs Coverity SAST results side-by-side
+6. **Pipeline Optimization**: Demonstrate parallel vs sequential scan execution within Stage 3
+7. **PR vs Full Scan**: Compare features and use cases for different scan triggers
 
 ## 🔗 References
 
 - [Black Duck Security Scan Extension](https://marketplace.visualstudio.com/items?itemName=synopsys-task.synopsys-security-scan-task)
 - [WebGoat Project](https://github.com/WebGoat/WebGoat)
 - [Azure DevOps YAML Schema](https://docs.microsoft.com/en-us/azure/devops/pipelines/yaml-schema)
+- [Azure DevOps SARIF Integration](https://docs.microsoft.com/en-us/azure/devops/pipelines/tasks/test/publish-test-results)
 - [Kubernetes NodePort Services](https://kubernetes.io/docs/concepts/services-networking/service/#nodeport)
 
 ---
 
-**Repository**: ADO-SecurityScan-Pipeline-WebGoat 
-**Maintained by**: Steve R. Smith
+**Repository**: ADO-SecurityScan-Pipeline-WebGoat  
+**Maintained by**: Steve R. Smith  
 **Purpose**: Azure DevOps Black Duck Pipeline Integration Training using the Security Scan Task  
-**Audience**: Black Duck Customer Development teams implementing DevSecOps practices
-**Last Updated**: September 10, 2025   
+**Audience**: Black Duck Customer Development teams implementing DevSecOps practices  
+**Last Updated**: September 14, 2025
