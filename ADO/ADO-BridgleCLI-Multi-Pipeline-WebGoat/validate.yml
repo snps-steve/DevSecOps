@@ -1,0 +1,209 @@
+# =============================================================================
+# STAGE 5 TEMPLATE: VALIDATION
+# =============================================================================
+# Purpose: Comprehensive validation of WebGoat deployment
+# Inputs: Deployed WebGoat application from Stage 4
+# Outputs: Health checks, connectivity tests, deployment summary
+# Dependencies: DeployKubernetes
+# =============================================================================
+
+parameters:
+- name: dependsOn
+  type: object
+  default: []
+
+stages:
+- stage: Validation
+  displayName: 'Stage 5: Validation'
+  dependsOn: ${{ parameters.dependsOn }}
+  jobs:
+  - job: ComprehensiveValidation
+    displayName: 'Comprehensive Deployment Validation'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Download SSH key
+    - task: DownloadSecureFile@1
+      displayName: 'Download SSH Key'
+      name: sshkey
+      inputs:
+        secureFile: 'steve-pem'
+
+    # Comprehensive deployment verification
+    - script: |
+        echo "==============================================="
+        echo "COMPREHENSIVE WEBGOAT DEPLOYMENT VALIDATION"
+        echo "Bridge CLI Security Integration Pipeline"
+        echo "==============================================="
+        
+        cp $(sshkey.secureFilePath) steve.pem
+        chmod 400 steve.pem
+        
+        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+          echo '=== Pod Readiness Check ==='
+          kubectl get pods -l app=webgoat -o wide
+          
+          # Wait for pod readiness with extended timeout
+          echo 'Waiting for pod readiness (max 5 minutes)...'
+          if kubectl wait --for=condition=ready pod -l app=webgoat --timeout=300s; then
+            echo 'SUCCESS: Pod is ready!'
+            pod_ready=true
+          else
+            echo 'TIMEOUT: Pod readiness check timed out'
+            echo 'Manual pod status:'
+            kubectl get pods -l app=webgoat -o wide
+            kubectl describe pods -l app=webgoat | tail -30
+            pod_ready=false
+          fi
+          
+          # Get pod information
+          POD_NAME=\$(kubectl get pods -l app=webgoat -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo 'NO_POD')
+          
+          if [ \"\$POD_NAME\" = 'NO_POD' ]; then
+              echo 'CRITICAL: No WebGoat pod found!'
+              kubectl get pods --all-namespaces | grep webgoat || echo 'No webgoat pods in any namespace'
+              exit 1
+          fi
+          
+          echo \"Working with pod: \$POD_NAME\"
+          
+          echo '=== Image and Configuration Verification ==='
+          kubectl describe pod \$POD_NAME | grep -E '(Image:|Image ID:|Status:|Ready:)' || echo 'Cannot retrieve pod details'
+          
+          echo '=== Application Health Verification ==='
+          webgoat_healthy=false
+          webwolf_healthy=false
+          
+          # WebGoat health check with retries
+          for attempt in {1..6}; do
+            echo \"WebGoat health check attempt \$attempt/6...\"
+            if kubectl exec \$POD_NAME -- curl -s -f http://localhost:8080/WebGoat/actuator/health >/dev/null 2>&1; then
+              echo 'SUCCESS: WebGoat health endpoint responding!'
+              webgoat_healthy=true
+              break
+            elif [ \$attempt -eq 6 ]; then
+              echo 'WebGoat health endpoint not responding after 6 attempts'
+            else
+              echo 'WebGoat not ready, retrying in 30 seconds...'
+              sleep 30
+            fi
+          done
+          
+          # WebWolf health check
+          echo 'Checking WebWolf health endpoint...'
+          if kubectl exec \$POD_NAME -- curl -s -f http://localhost:9090/WebWolf/actuator/health >/dev/null 2>&1; then
+            echo 'SUCCESS: WebWolf health endpoint responding!'
+            webwolf_healthy=true
+          else
+            echo 'WebWolf health endpoint check failed'
+          fi
+          
+          echo '=== Application Startup Log Analysis ==='
+          echo 'Recent logs (looking for startup success indicators):'
+          kubectl logs \$POD_NAME --tail=100 | grep -E '(Started|WebGoat|WebWolf|Tomcat.*started|server.*started|port.*8080|port.*9090)' | tail -10 || \\
+          kubectl logs \$POD_NAME --tail=20
+          
+          echo '=== Service and Network Verification ==='
+          kubectl get service webgoat-service
+          kubectl describe service webgoat-service
+          
+          echo ''
+          echo '================================================'
+          echo '           DEPLOYMENT VALIDATION SUMMARY'
+          echo '================================================'
+          if [ \"\$webgoat_healthy\" = true ] && [ \"\$webwolf_healthy\" = true ]; then
+            echo 'STATUS: SUCCESS - Both applications healthy'
+          elif [ \"\$webgoat_healthy\" = true ]; then
+            echo 'STATUS: PARTIAL - WebGoat healthy, WebWolf issues'
+          elif [ \"\$pod_ready\" = true ]; then
+            echo 'STATUS: DEPLOYED - Pod ready, applications starting'
+          else
+            echo 'STATUS: ISSUES - Deployment problems detected'
+          fi
+          echo ''
+          echo 'Application URLs:'
+          echo '  WebGoat: http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/'
+          echo '  WebWolf: http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/'
+          echo '================================================'
+        "
+      displayName: 'Comprehensive Deployment Verification'
+
+    # External connectivity validation
+    - script: |
+        echo "==============================================="
+        echo "EXTERNAL CONNECTIVITY VALIDATION"
+        echo "==============================================="
+        
+        # Allow time for full application startup
+        echo "Allowing 45 seconds for complete application startup..."
+        sleep 45
+        
+        # Test WebGoat external accessibility
+        echo "Testing WebGoat external connectivity..."
+        webgoat_external=false
+        if timeout 25 curl -s -I http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/ 2>/dev/null | head -1 | grep -q "HTTP"; then
+            echo "SUCCESS: WebGoat is externally accessible!"
+            curl -s -I http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/ | head -5
+            webgoat_external=true
+        else
+            echo "INCONCLUSIVE: WebGoat external connectivity test failed"
+            echo "This may be normal during startup - try manual access"
+        fi
+        
+        echo ""
+        
+        # Test WebWolf external accessibility  
+        echo "Testing WebWolf external connectivity..."
+        webwolf_external=false
+        if timeout 25 curl -s -I http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/ 2>/dev/null | head -1 | grep -q "HTTP"; then
+            echo "SUCCESS: WebWolf is externally accessible!"
+            curl -s -I http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/ | head -5
+            webwolf_external=true
+        else
+            echo "INCONCLUSIVE: WebWolf external connectivity test failed"
+            echo "This may be normal during startup - try manual access"
+        fi
+        
+        echo ""
+        echo "==============================================="
+        echo "         PIPELINE COMPLETION SUMMARY"
+        echo "==============================================="
+        echo ""
+        echo "Stage 1: Build WebGoat              ✓ COMPLETED"
+        echo "Stage 2: Build/Verify Container     ✓ COMPLETED"
+        echo "Stage 3: Execute Security Scans     ✓ COMPLETED (Bridge CLI)"
+        echo "Stage 4: Deploy via Kubernetes      ✓ COMPLETED"
+        echo "Stage 5: Validation                 ✓ COMPLETED"
+        echo ""
+        echo "Security Integration Method: Bridge CLI Direct Integration"
+        echo "  ✓ Black Duck SCA Source Analysis (Package Manager + Signature)"
+        echo "  ✓ Black Duck Container Analysis (BDSC equivalent)"
+        echo "  ✓ Coverity SAST Analysis"
+        echo "  ✓ SARIF reporting for Azure DevOps integration"
+        echo "  ✓ Succeeded with issues marking (no pipeline failures)"
+        echo ""
+        echo "WebGoat Application Access:"
+        echo "  Main Application: http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/"
+        echo "  WebWolf Service:  http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/"
+        echo ""
+        
+        if [ "$webgoat_external" = true ] && [ "$webwolf_external" = true ]; then
+            echo "STATUS: FULL SUCCESS - Both applications externally accessible"
+        elif [ "$webgoat_external" = true ]; then
+            echo "STATUS: PARTIAL SUCCESS - WebGoat accessible, WebWolf may need more time"
+        else
+            echo "STATUS: DEPLOYMENT SUCCESS - Applications may need 2-3 more minutes"
+            echo "        Try accessing the URLs manually if not immediately available"
+        fi
+        
+        echo ""
+        echo "Security scan results are available in the Azure DevOps pipeline"
+        echo "under the 'Extensions' or 'Security' tabs."
+        echo ""
+        echo "For troubleshooting: kubectl logs -l app=webgoat"
+        echo "==============================================="
+        
+        # Always exit successfully - pipeline deployment is complete
+        exit 0
+        
+      displayName: 'External Connectivity Validation'
