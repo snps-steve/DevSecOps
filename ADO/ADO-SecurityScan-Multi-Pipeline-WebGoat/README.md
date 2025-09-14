@@ -1,4 +1,4 @@
-# Modular Azure DevOps Pipeline for WebGoat
+# Modular Azure DevOps Security Scan Pipeline for WebGoat
 
 This repository demonstrates a modular Azure DevOps pipeline for building, scanning, and deploying the WebGoat application using Kubernetes. The pipeline is split into five logical stages:
 
