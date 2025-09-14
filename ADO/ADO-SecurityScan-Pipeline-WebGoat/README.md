@@ -1,4 +1,4 @@
-# Single Azure DevOps Pipeline for WebGoat
+# Single Azure DevOps Security Scan Pipeline for WebGoat
 
 A comprehensive Azure DevOps pipeline demonstrating Black Duck SCA and Coverity SAST integration for secure CI/CD workflows. This pipeline builds, scans, and deploys the WebGoat application to showcase enterprise security scanning capabilities.
 
