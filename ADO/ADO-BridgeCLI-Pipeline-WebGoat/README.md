@@ -1,4 +1,4 @@
-# Singular Bridge CLI Security Pipeline
+# Single Azure DevOps Bridge CLI Scan Pipeline for WebGoat
 
 A modern Azure DevOps pipeline demonstrating direct Bridge CLI integration for Black Duck SCA, Black Duck Secure Container (BDSC), and Coverity SAST. This pipeline builds, scans, deploys, and validates the WebGoat application using native CLI tools for maximum flexibility and DevSecOps best practices.
 
