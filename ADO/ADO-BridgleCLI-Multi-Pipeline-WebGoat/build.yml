@@ -1,0 +1,52 @@
+# =============================================================================
+# STAGE 1 TEMPLATE: BUILD WEBGOAT
+# =============================================================================
+# Purpose: Compiles WebGoat from source using Java 23 and Maven
+# Outputs: WebGoatSource artifact containing built JAR and source code
+# =============================================================================
+
+parameters:
+- name: dependsOn
+  type: object
+  default: []
+
+stages:
+- stage: BuildWebGoat
+  displayName: 'Stage 1: Build WebGoat'
+  dependsOn: ${{ parameters.dependsOn }}
+  jobs:
+  - job: BuildJob
+    displayName: 'Build WebGoat Source Code'
+    pool:
+      name: 'Self-Hosted ADO Agent'
+    steps:
+    # Verify Java 23 installation
+    - script: |
+        set -ex
+        echo "=== Java Environment Check ==="
+        java -version
+        javac -version
+        echo "JAVA_HOME: $JAVA_HOME"
+        ./mvnw -v
+      displayName: 'Verify Java 23 Environment'
+
+    # Build WebGoat from source (native Java 23)
+    - script: |
+        set -ex
+        echo "Building WebGoat from source with Java 23..."
+        chmod +x ./mvnw
+        
+        # Use native Java 23 compilation (no overrides needed)
+        ./mvnw clean install -DskipTests
+        
+        # Verify the build created the expected JAR
+        echo "=== Build artifacts ==="
+        find . -name "webgoat-*.jar" -not -path "*/original/*" -ls
+      displayName: 'Build WebGoat with Java 23'
+
+    # Publish build artifacts for subsequent stages
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish WebGoat Source and JAR'
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)'
+        artifact: 'WebGoatSource'
