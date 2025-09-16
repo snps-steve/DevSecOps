@@ -265,10 +265,10 @@ stages:
         artifact: 'WebGoatContainerImage'
 
 # ================================================================================
-# STAGE 3: EXECUTE SECURITY SCANS - BRIDGE CLI DIRECT INTEGRATION
+# ENHANCED STAGE 3: EXECUTE SECURITY SCANS - BRIDGE CLI WITH SARIF & PR SUPPORT
 # ================================================================================
 - stage: SecurityScans
-  displayName: 'Stage 3: Execute Security Scans (Bridge CLI)'
+  displayName: 'Stage 3: Execute Security Scans (Enhanced Bridge CLI)'
   dependsOn: [BuildWebGoat, BuildContainer]
   jobs:
   # ---- Bridge CLI Setup (Shared Installation) ----
@@ -289,22 +289,20 @@ stages:
         # Download Bridge CLI (Linux version)
         echo "Downloading Bridge CLI version: $(BRIDGE_CLI_VERSION)"
         if [ "$(BRIDGE_CLI_VERSION)" = "latest" ]; then
-            # Download latest version
-            curl -fsSL https://sig-repo.synopsys.com/artifactory/bds-integrations-release/com/synopsys/integration/synopsys-bridge/latest/synopsys-bridge-linux64.zip -o synopsys-bridge.zip
+            curl -fsSL https://repo.blackduck.com/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/latest/bridge-cli-bundle-linux64.zip -o bridge-cli-bundle-linux64.zip
         else
-            # Download specific version
-            curl -fsSL https://sig-repo.synopsys.com/artifactory/bds-integrations-release/com/synopsys/integration/synopsys-bridge/$(BRIDGE_CLI_VERSION)/synopsys-bridge-linux64.zip -o synopsys-bridge.zip
+            curl -fsSL https://repo.blackduck.com/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/$(BRIDGE_CLI_VERSION)/bridge-cli-bundle-linux64.zip -o bridge-cli-bundle-linux64.zip
         fi
         
         # Extract and setup
-        unzip -q synopsys-bridge.zip
-        chmod +x synopsys-bridge
+        unzip -q bridge-cli-bundle-linux64.zip
+        chmod +x bridge-cli-bundle-linux64
         
         # Verify installation
         echo "=== Bridge CLI Installation Verification ==="
         ./synopsys-bridge --version
         
-        echo "Bridge CLI installed successfully at: $(BRIDGE_CLI_INSTALL_DIR)/synopsys-bridge"
+        echo "Bridge CLI installed successfully at: $(BRIDGE_CLI_INSTALL_DIR)/bridge-cli-bundle-linux64"
         
       displayName: 'Install Bridge CLI'
 
@@ -335,10 +333,10 @@ stages:
         artifact: 'BridgeCLI'
         path: '$(BRIDGE_CLI_INSTALL_DIR)'
 
-    # Bridge CLI Black Duck Source Code Scan (Package Manager + Signature)
+    # Bridge CLI Black Duck Source Code Scan with PR Support
     - script: |
         set -e  # Don't use -x to avoid token exposure
-        echo "=== Bridge CLI Black Duck SCA Source Scan (Package Manager + Signature) ==="
+        echo "=== Bridge CLI Black Duck SCA Source Scan ==="
         
         # Set Bridge CLI path
         BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/synopsys-bridge"
@@ -347,30 +345,49 @@ stages:
         # Verify Bridge CLI
         ${BRIDGE_CLI_PATH} --version
         
-        # Set environment variables for Bridge CLI (EXACT VARIABLE NAMES MATCH)
+        # Set environment variables for Bridge CLI
         export BRIDGE_BLACKDUCKSCA_TOKEN="$(BLACKDUCK_API_TOKEN)"
+        
+        # Determine project version based on build reason
+        if [ "$(Build.Reason)" = "PullRequest" ]; then
+            PROJECT_VERSION="$(System.PullRequest.TargetBranchName)"
+            echo "PR Scan - Target Branch: $PROJECT_VERSION"
+        else
+            PROJECT_VERSION="$(PROJECT_VERSION)-source"
+            echo "Regular Scan - Version: $PROJECT_VERSION"
+        fi
         
         echo "=== Running Bridge CLI Black Duck SCA Source Scan ==="
         echo "Project: $(PROJECT_NAME)"
-        echo "Version: $(PROJECT_VERSION)-source"
+        echo "Version: $PROJECT_VERSION"
         echo "Target: Package Manager + Signature Scan"
         
-        # Bridge CLI Source scan with Package Manager + Signature detection
-        ${BRIDGE_CLI_PATH} \
-          --stage blackducksca \
-          blackducksca.url="$(BLACKDUCK_URL)" \
+        # Bridge CLI Source scan with enhanced configuration
+        BRIDGE_ARGS="--stage blackducksca \
+          blackducksca.url=\"$(BLACKDUCK_URL)\" \
           blackducksca.scan.full=true \
-          blackducksca.scan.failure.severities="BLOCKER,CRITICAL" \
+          blackducksca.scan.failure.severities=\"BLOCKER,CRITICAL\" \
           blackducksca.reports.sarif.create=true \
-          blackducksca.reports.sarif.file.path="blackduck-source-results.sarif" \
-          blackducksca.reports.sarif.severities="BLOCKER,CRITICAL,HIGH,MEDIUM" \
+          blackducksca.reports.sarif.file.path=\"blackduck-source-results.sarif\" \
+          blackducksca.reports.sarif.severities=\"BLOCKER,CRITICAL,HIGH,MEDIUM\" \
           blackducksca.reports.sarif.groupSCAissues=true \
-          project.name="$(PROJECT_NAME)" \
-          project.version.name="$(PROJECT_VERSION)-source" \
-          --verbose || echo "Bridge CLI scan completed with issues - continuing pipeline"
+          project.name=\"$(PROJECT_NAME)\" \
+          project.version.name=\"$PROJECT_VERSION\" \
+          --verbose"
+        
+        # Add PR-specific parameters if this is a pull request
+        if [ "$(Build.Reason)" = "PullRequest" ]; then
+            echo "Adding PR-specific parameters..."
+            BRIDGE_ARGS="$BRIDGE_ARGS \
+              blackducksca.fixpr.enabled=true \
+              blackducksca.prcomment.enabled=true \
+              azure.token=\"$(System.AccessToken)\""
+        fi
+        
+        # Execute Bridge CLI
+        ${BRIDGE_CLI_PATH} $BRIDGE_ARGS || echo "Bridge CLI scan completed with issues - continuing pipeline"
         
         echo "=== Source Scan Results Summary ==="
-        # Look for SARIF and other result files
         if [ -f "blackduck-source-results.sarif" ]; then
             echo "SUCCESS: SARIF report generated successfully"
             ls -la blackduck-source-results.sarif
@@ -378,29 +395,9 @@ stages:
             echo "WARNING: SARIF report not found"
         fi
         
-        if [ -d ".bridge" ]; then
-            echo "Bridge CLI output directory:"
-            find .bridge -name "*.json" -o -name "*.sarif" | head -10
-        fi
-        
-      displayName: 'Bridge CLI: Black Duck SCA Source Scan (Package Manager + Signature)'
+      displayName: 'Bridge CLI: Black Duck SCA Source Scan'
       continueOnError: true
       retryCountOnTaskFailure: 2
-
-    # Log Black Duck source scan status
-    - script: |
-        if [ $? -eq 0 ]; then
-          echo "SUCCESS: Bridge CLI Black Duck SCA source scan completed successfully"
-        else
-          echo "WARNING: Bridge CLI Black Duck SCA source scan failed - this may indicate:"
-          echo "  - Black Duck server is unavailable at $(BLACKDUCK_URL)"
-          echo "  - Authentication issues with API token"
-          echo "  - Network connectivity problems"
-          echo "  - Maven dependency resolution issues"
-          echo "Pipeline will continue, but source code security scan results may be incomplete"
-        fi
-      displayName: 'Log Black Duck Source Scan Status'
-      condition: always()
 
   # ---- Black Duck Container Scan (BDSC) ----
   - job: BlackDuckContainerScan
@@ -422,7 +419,7 @@ stages:
         artifact: 'BridgeCLI'
         path: '$(BRIDGE_CLI_INSTALL_DIR)'
 
-    # Bridge CLI Black Duck Container Scan (BDSC equivalent)
+    # Bridge CLI Black Duck Container Scan
     - script: |
         set -e  # Don't use -x to avoid token exposure
         echo "=== Bridge CLI Black Duck Container Scan (BDSC) ==="
@@ -438,18 +435,22 @@ stages:
             exit 1
         fi
         
-        echo "Container image file: ${TAR_FILE}"
-        ls -la ${TAR_FILE}
-        
         # Set environment variables for Bridge CLI
         export BRIDGE_BLACKDUCKSCA_TOKEN="$(BLACKDUCK_API_TOKEN)"
         
+        # Determine project version based on build reason
+        if [ "$(Build.Reason)" = "PullRequest" ]; then
+            PROJECT_VERSION="$(System.PullRequest.TargetBranchName)-container"
+        else
+            PROJECT_VERSION="$(PROJECT_VERSION)-container"
+        fi
+        
         echo "=== Running Bridge CLI Black Duck Container Scan ==="
         echo "Project: $(PROJECT_NAME)"
-        echo "Version: $(PROJECT_VERSION)-container"
-        echo "Target: Container Image Security Scanning (BDSC equivalent)"
+        echo "Version: $PROJECT_VERSION"
+        echo "Container: ${TAR_FILE}"
         
-        # Bridge CLI Container scan equivalent to BDSC
+        # Bridge CLI Container scan
         ${BRIDGE_CLI_PATH} \
           --stage blackducksca \
           blackducksca.url="$(BLACKDUCK_URL)" \
@@ -460,40 +461,16 @@ stages:
           blackducksca.reports.sarif.severities="BLOCKER,CRITICAL,HIGH,MEDIUM" \
           blackducksca.reports.sarif.groupSCAissues=true \
           project.name="$(PROJECT_NAME)" \
-          project.version.name="$(PROJECT_VERSION)-container" \
+          project.version.name="$PROJECT_VERSION" \
           --verbose || echo "Bridge CLI container scan completed with issues - continuing pipeline"
         
-        echo "=== Container Scan Results Summary ==="
-        if [ -f "blackduck-container-results.sarif" ]; then
-            echo "SUCCESS: Container SARIF report generated successfully"
-            ls -la blackduck-container-results.sarif
-        else
-            echo "WARNING: Container SARIF report not found"
-        fi
-        
-      displayName: 'Bridge CLI: Black Duck Container Scan (BDSC equivalent)'
+      displayName: 'Bridge CLI: Black Duck Container Scan'
       continueOnError: true
       retryCountOnTaskFailure: 2
 
-    # Log Black Duck container scan status
-    - script: |
-        if [ $? -eq 0 ]; then
-          echo "SUCCESS: Bridge CLI Black Duck container scan completed successfully"
-        else
-          echo "WARNING: Bridge CLI Black Duck container scan failed - this may indicate:"
-          echo "  - Black Duck server is unavailable at $(BLACKDUCK_URL)"
-          echo "  - Authentication issues with API token"
-          echo "  - Network connectivity problems"
-          echo "  - BDSC (Black Duck Secure Container) license not available"
-          echo "  - Container image file not found or corrupted"
-          echo "Pipeline will continue, but container security scan results may be incomplete"
-        fi
-      displayName: 'Log Black Duck Container Scan Status'
-      condition: always()
-
-  # ---- Coverity SAST ----
+  # ---- Coverity SAST with Manual SARIF Generation ----
   - job: CoveritySAST
-    displayName: 'Bridge CLI: Coverity SAST Analysis'
+    displayName: 'Bridge CLI: Coverity SAST Analysis with SARIF'
     dependsOn: BridgeCLISetup
     pool:
       name: 'Self-Hosted ADO Agent'
@@ -526,85 +503,201 @@ stages:
         BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/synopsys-bridge"
         chmod +x ${BRIDGE_CLI_PATH}
         
-        # Set environment variables for Bridge CLI (EXACT VARIABLE NAMES MATCH)
+        # Set environment variables for Bridge CLI
         export BRIDGE_COVERITY_CONNECT_USER_NAME="$(COV_USER)"
         export BRIDGE_COVERITY_CONNECT_USER_PASSWORD="$(COVERITY_PASSPHRASE)"
         
+        # Determine project version and policy view based on build reason
+        if [ "$(Build.Reason)" = "PullRequest" ]; then
+            PROJECT_VERSION="$(System.PullRequest.TargetBranchName)"
+            POLICY_VIEW=""  # No policy view for PR scans
+            echo "PR Scan - Target Branch: $PROJECT_VERSION"
+        else
+            PROJECT_VERSION="$(PROJECT_VERSION)"
+            POLICY_VIEW="$(COVERITY_VIEW)"
+            echo "Regular Scan - Version: $PROJECT_VERSION, Policy View: $POLICY_VIEW"
+        fi
+        
         echo "=== Running Bridge CLI Coverity SAST Scan ==="
         echo "Project: $(PROJECT_NAME)"
-        echo "Stream: $(PROJECT_NAME)-$(PROJECT_VERSION)"
-        echo "Policy View: $(COVERITY_VIEW)"
+        echo "Stream: $(PROJECT_NAME)-$PROJECT_VERSION"
         
-        # Bridge CLI Coverity scan
-        ${BRIDGE_CLI_PATH} \
-          --stage connect \
-          coverity.connect.url="$(COVERITY_URL)" \
-          coverity.connect.project.name="$(PROJECT_NAME)" \
-          coverity.connect.stream.name="$(PROJECT_NAME)-$(PROJECT_VERSION)" \
-          coverity.connect.policy.view="$(COVERITY_VIEW)" \
+        # Build Bridge CLI arguments
+        BRIDGE_ARGS="--stage connect \
+          coverity.connect.url=\"$(COVERITY_URL)\" \
+          coverity.connect.project.name=\"$(PROJECT_NAME)\" \
+          coverity.connect.stream.name=\"$(PROJECT_NAME)-$PROJECT_VERSION\" \
           coverity.local=true \
-          coverity.build.command="./mvnw clean compile" \
-          coverity.install.directory="/home/ubuntu/cov-platform" \
-          project.name="$(PROJECT_NAME)" \
-          project.version.name="$(PROJECT_VERSION)" \
-          --verbose || echo "Bridge CLI Coverity scan completed with issues - continuing pipeline"
+          coverity.build.command=\"./mvnw clean compile\" \
+          coverity.install.directory=\"/home/ubuntu/cov-platform\" \
+          project.name=\"$(PROJECT_NAME)\" \
+          project.version.name=\"$PROJECT_VERSION\" \
+          --verbose"
         
-        echo "=== Coverity Scan Results Summary ==="
-        if [ -d ".bridge" ]; then
-            echo "Bridge CLI Coverity output:"
-            find .bridge -name "*coverity*" -o -name "*.sarif" | head -10
+        # Add policy view for non-PR scans
+        if [ -n "$POLICY_VIEW" ]; then
+            BRIDGE_ARGS="$BRIDGE_ARGS coverity.connect.policy.view=\"$POLICY_VIEW\""
         fi
+        
+        # Add PR-specific parameters if this is a pull request
+        if [ "$(Build.Reason)" = "PullRequest" ]; then
+            echo "Adding PR-specific parameters for Coverity..."
+            BRIDGE_ARGS="$BRIDGE_ARGS \
+              coverity.prcomment.enabled=true \
+              azure.token=\"$(System.AccessToken)\""
+        fi
+        
+        # Execute Bridge CLI Coverity scan
+        ${BRIDGE_CLI_PATH} $BRIDGE_ARGS || echo "Bridge CLI Coverity scan completed with issues - continuing pipeline"
         
       displayName: 'Bridge CLI: Coverity SAST Scan'
       continueOnError: true
       retryCountOnTaskFailure: 2
 
-    # Log Coverity scan status
+    # Manual SARIF Generation for On-Premises Coverity
     - script: |
-        if [ $? -eq 0 ]; then
-          echo "SUCCESS: Bridge CLI Coverity SAST scan completed successfully"
-        else
-          echo "WARNING: Bridge CLI Coverity SAST scan failed - this may indicate:"
-          echo "  - Coverity Connect server is unavailable at $(COVERITY_URL)"
-          echo "  - Authentication issues with user credentials"
-          echo "  - Network connectivity problems"
-          echo "  - Server-side errors (HTTP 500) requiring administrator attention"
-          echo "  - Project/stream configuration issues"
-          echo "  - Build compilation issues affecting static analysis"
-          echo "Pipeline will continue, but SAST scan results may be incomplete"
+        echo "=== Manual Coverity SARIF Generation for Bridge CLI ==="
+        echo "Note: Bridge CLI with coverity.local=true doesn't auto-generate SARIF"
+        
+        # Search for Bridge CLI Coverity intermediate directory
+        BRIDGE_IDIR=$(find $(Build.SourcesDirectory) -path "*/.bridge/Coverity*/idir" -type d 2>/dev/null | head -1)
+        
+        # Also check Agent.WorkFolder as fallback
+        if [ -z "$BRIDGE_IDIR" ]; then
+          BRIDGE_IDIR=$(find $(Agent.WorkFolder) -path "*/.bridge/Coverity*/idir" -type d 2>/dev/null | head -1)
         fi
-      displayName: 'Log Coverity Scan Status'
+        
+        if [ -n "$BRIDGE_IDIR" ]; then
+          echo "SUCCESS: Found Coverity iDir at: $BRIDGE_IDIR"
+          
+          # Look for cov-format-errors in Bridge tools directory or Coverity installation
+          COV_FORMAT_ERRORS=""
+          
+          # First try Bridge tools directory
+          COV_TOOLS_DIR=$(find ~/.blackduck/bridge/tools -name "cov-analysis" -type d 2>/dev/null | head -1)
+          if [ -n "$COV_TOOLS_DIR" ]; then
+            COV_FORMAT_ERRORS="$COV_TOOLS_DIR/bin/cov-format-errors"
+          fi
+          
+          # Fallback to manual Coverity installation
+          if [ ! -f "$COV_FORMAT_ERRORS" ]; then
+            COV_FORMAT_ERRORS="/home/ubuntu/cov-platform/bin/cov-format-errors"
+          fi
+          
+          echo "Using cov-format-errors: $COV_FORMAT_ERRORS"
+          
+          if [ -f "$COV_FORMAT_ERRORS" ]; then
+            SARIF_OUTPUT="$(Agent.WorkFolder)/coverity-bridge-results.sarif"
+            echo "Generating SARIF to: $SARIF_OUTPUT"
+            
+            # Generate SARIF with proper error handling
+            if "$COV_FORMAT_ERRORS" --dir "$BRIDGE_IDIR" --json-output-v2 "$SARIF_OUTPUT"; then
+              echo "SUCCESS: SARIF generated successfully"
+              
+              if [ -f "$SARIF_OUTPUT" ]; then
+                echo "File size: $(du -h "$SARIF_OUTPUT" | cut -f1)"
+                
+                # Verify SARIF content
+                if grep -q "\"version\"" "$SARIF_OUTPUT" 2>/dev/null; then
+                  echo "SARIF appears to be valid JSON"
+                  
+                  # Count issues in SARIF
+                  ISSUE_COUNT=$(grep -o '"ruleId"' "$SARIF_OUTPUT" 2>/dev/null | wc -l || echo "0")
+                  echo "SARIF contains $ISSUE_COUNT issues"
+                else
+                  echo "WARNING: SARIF may be malformed"
+                fi
+              else
+                echo "ERROR: SARIF file was not created"
+              fi
+            else
+              echo "ERROR: cov-format-errors command failed"
+            fi
+          else
+            echo "ERROR: cov-format-errors not found at: $COV_FORMAT_ERRORS"
+            echo "Available Coverity tools:"
+            find /home/ubuntu/cov-platform -name "cov-format-errors" 2>/dev/null || echo "None found"
+          fi
+        else
+          echo "ERROR: No Bridge Coverity iDir found"
+          echo "Searched for pattern: */.bridge/Coverity*/idir"
+          echo "Available .bridge directories:"
+          find $(Build.SourcesDirectory) $(Agent.WorkFolder) -name ".bridge" -type d 2>/dev/null | head -5
+          
+          echo "Bridge CLI execution details:"
+          find $(Build.SourcesDirectory) $(Agent.WorkFolder) -name "*coverity*" -type d 2>/dev/null | head -10
+        fi
+      displayName: 'Generate Coverity SARIF Manually (Bridge CLI)'
       condition: always()
+      continueOnError: true
 
   # ---- Publish All Security Results ----
   - job: PublishSecurityResults
-    displayName: 'Publish Security Scan Results'
+    displayName: 'Publish Security Scan Results with SARIF'
     dependsOn: [BlackDuckSourceScan, BlackDuckContainerScan, CoveritySAST]
     condition: always()
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
-    # Publish security scan artifacts
-    - task: PublishPipelineArtifact@1
-      displayName: 'Publish Security Scan Artifacts'
-      condition: always()
-      inputs:
-        targetPath: '$(Agent.WorkFolder)'
-        artifactName: 'SecurityScanResults'
-        publishLocation: 'pipeline'
-      continueOnError: true
-
     # Publish SARIF results as test results for ADO integration
     - task: PublishTestResults@2
-      displayName: 'Publish SARIF as Test Results'
+      displayName: 'Publish Black Duck SARIF Results'
       condition: always()
       inputs:
         testResultsFormat: 'VSTest'
-        testResultsFiles: '**/*.sarif'
+        testResultsFiles: |
+          **/blackduck-*-results.sarif
+          **/*blackduck*.sarif
         searchFolder: '$(Agent.WorkFolder)'
         publishRunAttachments: true
         failTaskOnFailedTests: false
+        testRunTitle: 'Black Duck SCA Scans'
       continueOnError: true
+
+    - task: PublishTestResults@2
+      displayName: 'Publish Coverity SARIF Results'
+      condition: always()
+      inputs:
+        testResultsFormat: 'VSTest'
+        testResultsFiles: |
+          **/coverity-*-results.sarif
+          **/*coverity*.sarif
+        searchFolder: '$(Agent.WorkFolder)'
+        publishRunAttachments: true
+        failTaskOnFailedTests: false
+        testRunTitle: 'Coverity SAST Scan'
+      continueOnError: true
+
+    # Publish security scan artifacts
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish All Security Scan Artifacts'
+      condition: always()
+      inputs:
+        targetPath: '$(Agent.WorkFolder)'
+        artifactName: 'BridgeCLISecurityResults'
+        publishLocation: 'pipeline'
+      continueOnError: true
+
+    # Create summary of scan results
+    - script: |
+        echo "=== Bridge CLI Security Scan Summary ==="
+        echo "The following security scans were executed via Bridge CLI:"
+        echo "1. Black Duck SCA Source Scan (Package Manager + Signature)"
+        echo "2. Black Duck SCA Container Scan (BDSC equivalent)"
+        echo "3. Coverity SAST Scan with manual SARIF generation"
+        echo ""
+        echo "Build Reason: $(Build.Reason)"
+        if [ "$(Build.Reason)" = "PullRequest" ]; then
+            echo "PR Target Branch: $(System.PullRequest.TargetBranchName)"
+            echo "PR Features Enabled: Fix PR, PR Comments"
+        fi
+        echo ""
+        echo "SARIF results published to Azure DevOps 'Tests' tab"
+        echo "Full scan artifacts available in pipeline artifacts"
+        echo ""
+        echo "Manual SARIF generation addresses the coverity.local=true limitation"
+        echo "for on-premises Coverity Connect deployments."
+      displayName: 'Bridge CLI Security Scan Summary'
 
 # ================================================================================
 # STAGE 4: DEPLOY WEBGOAT VIA KUBERNETES
