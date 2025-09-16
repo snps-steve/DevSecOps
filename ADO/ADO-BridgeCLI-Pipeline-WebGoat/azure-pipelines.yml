@@ -300,7 +300,7 @@ stages:
         
         # Verify installation
         echo "=== Bridge CLI Installation Verification ==="
-        ./synopsys-bridge --version
+        ./bridge-cli-bundle-linux64/bridge-cli --version
         
         echo "Bridge CLI installed successfully at: $(BRIDGE_CLI_INSTALL_DIR)/bridge-cli-bundle-linux64"
         
