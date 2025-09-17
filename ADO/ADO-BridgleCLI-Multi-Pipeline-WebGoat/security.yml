@@ -27,6 +27,10 @@ stages:
     - script: |
         set -ex
         echo "=== Installing Bridge CLI ==="
+
+        # Clean up any existing installation
+        rm -rf bridge-cli-bundle-linux64/
+        rm -f bridge-cli-bundle-linux64.zip
         
         # Create Bridge CLI directory
         mkdir -p $(BRIDGE_CLI_INSTALL_DIR)
@@ -35,13 +39,26 @@ stages:
         # Download Bridge CLI (Linux version)
         echo "Downloading Bridge CLI version: $(BRIDGE_CLI_VERSION)"
         if [ "$(BRIDGE_CLI_VERSION)" = "latest" ]; then
-            curl -fsSL https://repo.blackduck.com/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/latest/bridge-cli-bundle-linux64.zip -o bridge-cli-bundle-linux64.zip
+            curl --connect-timeout 30 --max-time 300 -fsSL https://repo.blackduck.com/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/latest/bridge-cli-bundle-linux64.zip -o bridge-cli-bundle-linux64.zip
         else
-            curl -fsSL https://repo.blackduck.com/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/$(BRIDGE_CLI_VERSION)/bridge-cli-bundle-linux64.zip -o bridge-cli-bundle-linux64.zip
+            curl --connect-timeout 30 --max-time 300 -fsSL https://repo.blackduck.com/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/$(BRIDGE_CLI_VERSION)/bridge-cli-bundle-linux64.zip -o bridge-cli-bundle-linux64.zip
         fi
+
+        # Check to make sure it's there
+        if [ ! -f "bridge-cli-bundle-linux64.zip" ]; then
+        echo "ERROR: Failed to download Bridge CLI"
+        exit 1
+        fi
+
+        # Another check to make sure it's there 
+        FILE_SIZE=$(stat -c%s bridge-cli-bundle-linux64.zip)
+        if [ $FILE_SIZE -lt 1000000 ]; then  # Less than 1MB suggests incomplete download
+            echo "ERROR: Downloaded file appears incomplete"
+            exit 1
+        fi 
         
         # Extract and setup
-        unzip -q bridge-cli-bundle-linux64.zip
+        unzip -o -q bridge-cli-bundle-linux64.zip
         chmod +x bridge-cli-bundle-linux64/bridge-cli
         
         # Verify installation
