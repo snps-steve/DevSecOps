@@ -48,7 +48,7 @@ stages:
         echo "=== Bridge CLI Installation Verification ==="
         ./bridge-cli-bundle-linux64/bridge-cli --version
         
-        echo "Bridge CLI installed successfully at: $(BRIDGE_CLI_INSTALL_DIR)/bridge-cli-bundle-linux64"
+        echo "Bridge CLI installed successfully at: $(BRIDGE_CLI_INSTALL_DIR)/bridge-cli"
         
       displayName: 'Install Bridge CLI'
 
@@ -85,7 +85,7 @@ stages:
         echo "=== Bridge CLI Black Duck SCA Source Scan ==="
         
         # Set Bridge CLI path
-        BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/synopsys-bridge"
+        BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/bridge-cli"
         chmod +x ${BRIDGE_CLI_PATH}
         
         # Verify Bridge CLI
@@ -171,7 +171,7 @@ stages:
         echo "=== Bridge CLI Black Duck Container Scan (BDSC) ==="
         
         # Set Bridge CLI path
-        BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/synopsys-bridge"
+        BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/bridge-cli"
         chmod +x ${BRIDGE_CLI_PATH}
         
         # Verify container image exists
@@ -246,7 +246,7 @@ stages:
         echo "=== Bridge CLI Coverity SAST Scan ==="
         
         # Set Bridge CLI path
-        BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/synopsys-bridge"
+        BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/bridge-cli"
         chmod +x ${BRIDGE_CLI_PATH}
         
         # Set environment variables for Bridge CLI
