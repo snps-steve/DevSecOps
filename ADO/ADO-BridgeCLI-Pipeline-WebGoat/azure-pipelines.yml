@@ -194,7 +194,13 @@ stages:
     - bash: |
         set -ex
         curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
-        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca
+        
+        # Test connectivity first
+        echo "Testing Black Duck connectivity..."
+        curl -I $(BLACKDUCK_URL) --max-time 30 || echo "Warning: Connectivity test failed"
+        
+        # Run Bridge CLI with extended timeouts
+        timeout 1800 $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca
       env:
         BRIDGE_BLACKDUCKSCA_URL: $(BLACKDUCK_URL)
         BRIDGE_BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
@@ -210,13 +216,26 @@ stages:
         DETECT_PROJECT_NAME: $(Build.Repository.Name)
         DETECT_PROJECT_VERSION_NAME: $(Build.SourceBranchName)
         DETECT_CODE_LOCATION_NAME: $(Build.Repository.Name)-$(Build.SourceBranchName)
+        # Black Duck timeout configurations
+        DETECT_BLACKDUCK_TIMEOUT: 900
+        DETECT_API_TIMEOUT: 300000
+        BLACKDUCK_TIMEOUT: 900
+        # SSL configuration for self-signed certificates
+        NETWORK_SSL_TRUSTALL: true
       displayName: 'Black Duck Full Scan'
       condition: not(eq(variables['Build.Reason'], 'PullRequest'))
+      timeoutInMinutes: 45
       continueOnError: true
     - bash: |
         set -ex
         curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
-        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca
+        
+        # Test connectivity first
+        echo "Testing Black Duck connectivity..."
+        curl -I $(BLACKDUCK_URL) --max-time 30 || echo "Warning: Connectivity test failed"
+        
+        # Run Bridge CLI with extended timeouts
+        timeout 1800 $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca
       env:
         BRIDGE_BLACKDUCKSCA_URL: $(BLACKDUCK_URL)
         BRIDGE_BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
@@ -231,8 +250,15 @@ stages:
         DETECT_PROJECT_NAME: $(Build.Repository.Name)
         DETECT_PROJECT_VERSION_NAME: $(System.PullRequest.targetBranchName)
         DETECT_CODE_LOCATION_NAME: $(Build.Repository.Name)-$(System.PullRequest.targetBranchName)
+        # Black Duck timeout configurations
+        DETECT_BLACKDUCK_TIMEOUT: 900
+        DETECT_API_TIMEOUT: 300000
+        BLACKDUCK_TIMEOUT: 900
+        # SSL configuration for self-signed certificates
+        NETWORK_SSL_TRUSTALL: true
       displayName: 'Black Duck PR Scan'
       condition: eq(variables['Build.Reason'], 'PullRequest')
+      timeoutInMinutes: 45
       continueOnError: true
 
   - job: BlackDuckContainerScan
@@ -269,6 +295,8 @@ stages:
         DETECT_PROJECT_VERSION_NAME: $(Build.SourceBranchName)-container
         DETECT_CODE_LOCATION_NAME: $(Build.Repository.Name)-$(Build.SourceBranchName)-container
         DETECT_DOCKER_IMAGE: webgoat:$(Build.BuildId)
+        # SSL configuration for self-signed certificates
+        NETWORK_SSL_TRUSTALL: true
       displayName: 'Black Duck Container Scan'
       continueOnError: true
 
