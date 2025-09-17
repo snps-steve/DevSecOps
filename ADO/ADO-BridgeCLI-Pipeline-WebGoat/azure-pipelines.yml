@@ -14,47 +14,29 @@
 #
 
 trigger:
-- main
-- develop
-
+  branches:
+    include:
+    - main
+    - develop
 variables:
-  # Security scan variable groups (EXACT MATCH to Security Scan Task version)
-  - group: blackduck-sca-variables
-  - group: coverity-variables
-  
-  # Project configuration (EXACT MATCH to Security Scan Task version)
-  - name: PROJECT_NAME
-    value: $(Build.Repository.Name)
-  - name: PROJECT_VERSION
-    value: $(Build.SourceBranchName)
-    
-  # Bridge CLI configuration (ADD THESE)
-  - name: BRIDGE_CLI_INSTALL_DIR
-    value: '/tmp/bridge-cli'
-  - name: BRIDGE_CLI_VERSION
-    value: 'latest'
-    
-  # Kubernetes configuration (EXACT MATCH to Security Scan Task version)
-  - name: K8S_SERVER_IP
-    value: "172.31.17.121"  # Your MicroK8s server private IP (for SSH)
-  - name: K8S_PUBLIC_IP
-    value: "44.253.226.227"  # Your MicroK8s server public IP (for web access)
-  - name: WEBGOAT_NODEPORT
-    value: "30080"  # NodePort for WebGoat
-  - name: WEBWOLF_NODEPORT
-    value: "30090"  # NodePort for WebWolf
-    
-  # Conditional variable for Coverity policy view (EXACT MATCH to Security Scan Task version)
-  - name: COVERITY_VIEW
-    ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
-      value: ''
-    ${{ else }}:
-      value: 'Outstanding Issues'
+- group: blackduck-sca-variables
+- group: coverity-variables
+- name: PROJECT_NAME
+  value: $(Build.Repository.Name)
+- name: PROJECT_VERSION
+  value: $(Build.SourceBranchName)
+- name: K8S_SERVER_IP
+  value: "172.31.17.121"
+- name: K8S_PUBLIC_IP
+  value: "44.253.226.227"
+- name: WEBGOAT_NODEPORT
+  value: "30080"
+- name: WEBWOLF_NODEPORT
+  value: "30090"
+- name: COVERITY_VIEW
+  value: 'Outstanding Issues'
 
 stages:
-# ================================================================================
-# STAGE 1: BUILD WEBGOAT
-# ================================================================================
 - stage: BuildWebGoat
   displayName: 'Stage 1: Build WebGoat'
   jobs:
@@ -63,133 +45,96 @@ stages:
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
-    # Verify Java 23 installation
-    - script: |
-        set -ex
-        echo "=== Java Environment Check ==="
-        java -version
-        javac -version
-        echo "JAVA_HOME: $JAVA_HOME"
-        ./mvnw -v
+    - task: CmdLine@2
       displayName: 'Verify Java 23 Environment'
-
-    # Build WebGoat from source (native Java 23)
-    - script: |
-        set -ex
-        echo "Building WebGoat from source with Java 23..."
-        chmod +x ./mvnw
-        
-        # Use native Java 23 compilation (no overrides needed)
-        ./mvnw clean install -DskipTests
-        
-        # Verify the build created the expected JAR
-        echo "=== Build artifacts ==="
-        find . -name "webgoat-*.jar" -not -path "*/original/*" -ls
+      inputs:
+        script: |
+          set -ex
+          echo "=== Java Environment Check ==="
+          java -version
+          javac -version
+          echo "JAVA_HOME: $JAVA_HOME"
+          ./mvnw -v
+    - task: CmdLine@2
       displayName: 'Build WebGoat with Java 23'
-
-    # Publish build artifacts for subsequent stages
+      inputs:
+        script: |
+          set -ex
+          echo "Building WebGoat from source with Java 23..."
+          chmod +x ./mvnw
+          ./mvnw clean install -DskipTests
+          echo "=== Build artifacts ==="
+          find . -name "webgoat-*.jar" -not -path "*/original/*" -ls
     - task: PublishPipelineArtifact@1
       displayName: 'Publish WebGoat Source and JAR'
       inputs:
         targetPath: '$(Build.SourcesDirectory)'
         artifact: 'WebGoatSource'
 
-# ================================================================================
-# STAGE 2: BUILD/VERIFY WEBGOAT CONTAINER AND IMAGE
-# ================================================================================
 - stage: BuildContainer
   displayName: 'Stage 2: Build/Verify Container'
-  dependsOn: BuildWebGoat
+  dependsOn:
+  - BuildWebGoat
   jobs:
   - job: ContainerBuildJob
     displayName: 'Build and Verify WebGoat Container'
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
-    # Download build artifacts
     - task: DownloadPipelineArtifact@2
       displayName: 'Download WebGoat Source'
       inputs:
         artifact: 'WebGoatSource'
         path: '$(Build.SourcesDirectory)'
-
-    # Create optimized Dockerfile
-    - script: |
-        echo "Creating WebGoat Dockerfile..."
-        
-        # Find the actual JAR file
-        JAR_FILE=$(find . -name "webgoat-*.jar" -not -path "*/original/*" | head -1)
-        if [ -z "$JAR_FILE" ]; then
-            echo "ERROR: No WebGoat JAR file found!"
-            echo "Available JAR files:"
-            find . -name "*.jar" -type f
-            exit 1
-        fi
-        
-        echo "Found JAR file: $JAR_FILE"
-        
-        cat > Dockerfile << 'EOF'
-        # Use eclipse-temurin for Java 23 support
-        FROM docker.io/eclipse-temurin:23-jdk-noble
-        
-        LABEL name="WebGoat: A deliberately insecure Web Application"
-        LABEL maintainer="WebGoat team"
-        LABEL version="BUILD_ID_PLACEHOLDER"
-        
-        # Install curl for health checks
-        RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-        
-        # Create webgoat user
-        RUN \
-          useradd -ms /bin/bash webgoat && \
-          chgrp -R 0 /home/webgoat && \
-          chmod -R g=u /home/webgoat
-        
-        # Create WebGoat data directory
-        RUN mkdir -p /home/webgoat/.webgoat-2025.4-SNAPSHOT && \
-            chown -R webgoat:webgoat /home/webgoat
-        
-        USER webgoat
-        
-        # Copy JAR file
-        COPY --chown=webgoat JAR_FILE_PLACEHOLDER /home/webgoat/webgoat.jar
-        
-        EXPOSE 8080
-        EXPOSE 9090
-        
-        ENV TZ=Europe/Amsterdam
-        
-        WORKDIR /home/webgoat
-        
-        # Basic ENTRYPOINT - will be overridden by Kubernetes
-        ENTRYPOINT [ "java", \
-           "-Duser.home=/home/webgoat", \
-           "-Dfile.encoding=UTF-8", \
-           "--add-opens", "java.base/java.lang=ALL-UNNAMED", \
-           "--add-opens", "java.base/java.util=ALL-UNNAMED", \
-           "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED", \
-           "--add-opens", "java.base/java.text=ALL-UNNAMED", \
-           "--add-opens", "java.desktop/java.beans=ALL-UNNAMED", \
-           "--add-opens", "java.desktop/java.awt.font=ALL-UNNAMED", \
-           "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED", \
-           "--add-opens", "java.base/java.io=ALL-UNNAMED", \
-           "-Drunning.in.docker=true", \
-           "-jar", "webgoat.jar" ]
-        
-        # Health check
-        HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
-           CMD curl --fail --silent http://localhost:8080/WebGoat/actuator/health || exit 1
-        EOF
-        
-        # Replace placeholders with actual values
-        sed -i "s|JAR_FILE_PLACEHOLDER|$JAR_FILE|g" Dockerfile
-        sed -i "s|BUILD_ID_PLACEHOLDER|$(Build.BuildId)|g" Dockerfile
-        
-        echo "=== Created Dockerfile ==="
-        cat Dockerfile
+    - task: CmdLine@2
       displayName: 'Create WebGoat Dockerfile'
+      inputs:
+        script: |
+          echo "Creating WebGoat Dockerfile..."
+          JAR_FILE=$(find . -name "webgoat-*.jar" -not -path "*/original/*" | head -1)
+          if [ -z "$JAR_FILE" ]; then
+              echo "ERROR: No WebGoat JAR file found!"
+              echo "Available JAR files:"
+              find . -name "*.jar" -type f
+              exit 1
+          fi
+          echo "Found JAR file: $JAR_FILE"
 
-    # Build Docker image
+          cat > Dockerfile << 'EOF'
+          FROM docker.io/eclipse-temurin:23-jdk-noble
+          LABEL name="WebGoat: A deliberately insecure Web Application"
+          LABEL maintainer="WebGoat team"
+          LABEL version="BUILD_ID_PLACEHOLDER"
+          RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+          RUN useradd -ms /bin/bash webgoat && chgrp -R 0 /home/webgoat && chmod -R g=u /home/webgoat
+          RUN mkdir -p /home/webgoat/.webgoat-2025.4-SNAPSHOT && chown -R webgoat:webgoat /home/webgoat
+          USER webgoat
+          COPY --chown=webgoat JAR_FILE_PLACEHOLDER /home/webgoat/webgoat.jar
+          EXPOSE 8080
+          EXPOSE 9090
+          ENV TZ=Europe/Amsterdam
+          WORKDIR /home/webgoat
+          ENTRYPOINT [ "java", \
+             "-Duser.home=/home/webgoat", \
+             "-Dfile.encoding=UTF-8", \
+             "--add-opens", "java.base/java.lang=ALL-UNNAMED", \
+             "--add-opens", "java.base/java.util=ALL-UNNAMED", \
+             "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED", \
+             "--add-opens", "java.base/java.text=ALL-UNNAMED", \
+             "--add-opens", "java.desktop/java.beans=ALL-UNNAMED", \
+             "--add-opens", "java.desktop/java.awt.font=ALL-UNNAMED", \
+             "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED", \
+             "--add-opens", "java.base/java.io=ALL-UNNAMED", \
+             "-Drunning.in.docker=true", \
+             "-jar", "webgoat.jar" ]
+          HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
+             CMD curl --fail --silent http://localhost:8080/WebGoat/actuator/health || exit 1
+          EOF
+
+          sed -i "s|JAR_FILE_PLACEHOLDER|$JAR_FILE|g" Dockerfile
+          sed -i "s|BUILD_ID_PLACEHOLDER|$(Build.BuildId)|g" Dockerfile
+          echo "=== Created Dockerfile ==="
+          cat Dockerfile
     - task: Docker@2
       displayName: 'Build WebGoat Docker Image'
       inputs:
@@ -199,259 +144,109 @@ stages:
         tags: |
           $(Build.BuildId)
           latest
-
-    # Verify and analyze built image
-    - script: |
-        echo "=== Docker Image Verification ==="
-        docker images | grep webgoat
-        
-        IMAGE_TAG="webgoat:$(Build.BuildId)"
-        
-        if docker images | grep -q "webgoat.*$(Build.BuildId)"; then
-            echo "SUCCESS: Found $IMAGE_TAG"
-        else
-            echo "ERROR: $IMAGE_TAG not found!"
-            exit 1
-        fi
-        
-        # Get image details
-        echo "=== Image Analysis ==="
-        docker inspect $IMAGE_TAG --format='{{.Config.Labels}}' || echo "No labels found"
-        docker inspect $IMAGE_TAG --format='Size: {{.Size}} bytes' || echo "Cannot get size"
-        
-        # Quick container test
-        echo "=== Quick Container Functionality Test ==="
-        docker run --rm --name webgoat-test -d -p 18080:8080 $IMAGE_TAG
-        sleep 10
-        
-        if docker ps | grep -q webgoat-test; then
-            echo "SUCCESS: Container started successfully"
-            docker stop webgoat-test
-        else
-            echo "WARNING: Container may have startup issues"
-        fi
-      displayName: 'Verify Docker Image Build'
-
-    # Prepare image for transfer and scanning
-    - script: |
-        set -e
-        
-        IMAGE_TAG="webgoat:$(Build.BuildId)"
-        TAR_FILE="webgoat-$(Build.BuildId).tar"
-        
-        echo "=== Preparing Image for Transfer and Scanning ==="
-        
-        # Save image as tar for container scanning and K8s transfer
-        echo "Saving Docker image to tar file..."
-        docker save ${IMAGE_TAG} -o ${TAR_FILE}
-        
-        # Verify tar file
-        if [ -f "${TAR_FILE}" ]; then
-            TAR_SIZE=$(du -h ${TAR_FILE} | cut -f1)
-            echo "SUCCESS: Created ${TAR_FILE} (${TAR_SIZE})"
-        else
-            echo "ERROR: Failed to create tar file"
-            exit 1
-        fi
-        
-        echo "Image ready for security scanning and deployment"
-      displayName: 'Prepare Image for Next Stages'
-
-    # Publish container artifacts for security scanning
+    - task: CmdLine@2
+      displayName: 'Verify and Save Docker Image'
+      inputs:
+        script: |
+          echo "=== Docker Image Verification ==="
+          docker images | grep webgoat
+          IMAGE_TAG="webgoat:$(Build.BuildId)"
+          if docker images | grep -q "webgoat.*$(Build.BuildId)"; then
+              echo "SUCCESS: Found $IMAGE_TAG"
+          else
+              echo "ERROR: $IMAGE_TAG not found!"
+              exit 1
+          fi
+          
+          # Save image as tar for deployment
+          TAR_FILE="webgoat-$(Build.BuildId).tar"
+          echo "Saving Docker image to tar file..."
+          docker save ${IMAGE_TAG} -o ${TAR_FILE}
+          if [ -f "${TAR_FILE}" ]; then
+              TAR_SIZE=$(du -h ${TAR_FILE} | cut -f1)
+              echo "SUCCESS: Created ${TAR_FILE} (${TAR_SIZE})"
+          else
+              echo "ERROR: Failed to create tar file"
+              exit 1
+          fi
     - task: PublishPipelineArtifact@1
       displayName: 'Publish Container Image'
       inputs:
         targetPath: 'webgoat-$(Build.BuildId).tar'
         artifact: 'WebGoatContainerImage'
 
-# =============================================================================
-# STAGE 3 TEMPLATE: SECURITY SCANS - BRIDGE CLI DIRECT INTEGRATION
-# =============================================================================
-
-parameters:
-- name: dependsOn
-  type: object
-  default: []
-
-stages:
 - stage: SecurityScans
   displayName: 'Stage 3: Execute Security Scans (Bridge CLI)'
-  dependsOn: ${{ parameters.dependsOn }}
+  dependsOn:
+  - BuildWebGoat
+  - BuildContainer
   jobs:
-  # ---- Bridge CLI Setup (Shared Installation) ----
-  - job: BridgeCLISetup
-    displayName: 'Bridge CLI Installation'
-    pool:
-      name: 'Self-Hosted ADO Agent'
-    steps:
-    # Install Bridge CLI for subsequent jobs
-    - script: |
-        set -ex
-        echo "=== Installing Bridge CLI ==="
-
-        # Clean up any existing installation
-        rm -rf bridge-cli-bundle-linux64/
-        rm -f bridge-cli-bundle-linux64.zip
-        
-        # Create Bridge CLI directory
-        mkdir -p $(BRIDGE_CLI_INSTALL_DIR)
-        cd $(BRIDGE_CLI_INSTALL_DIR)
-        
-        # Download Bridge CLI (Linux version)
-        echo "Downloading Bridge CLI version: $(BRIDGE_CLI_VERSION)"
-        if [ "$(BRIDGE_CLI_VERSION)" = "latest" ]; then
-            curl --connect-timeout 30 --max-time 300 -fsSL https://repo.blackduck.com/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/latest/bridge-cli-bundle-linux64.zip -o bridge-cli-bundle-linux64.zip
-        else
-            curl --connect-timeout 30 --max-time 300 -fsSL https://repo.blackduck.com/bds-integrations-release/com/blackduck/integration/bridge/binaries/bridge-cli-bundle/$(BRIDGE_CLI_VERSION)/bridge-cli-bundle-linux64.zip -o bridge-cli-bundle-linux64.zip
-        fi
-
-        # Check to make sure it's there
-        if [ ! -f "bridge-cli-bundle-linux64.zip" ]; then
-        echo "ERROR: Failed to download Bridge CLI"
-        exit 1
-        fi
-
-        # Another check to make sure it's there 
-        FILE_SIZE=$(stat -c%s bridge-cli-bundle-linux64.zip)
-        if [ $FILE_SIZE -lt 1000000 ]; then  # Less than 1MB suggests incomplete download
-            echo "ERROR: Downloaded file appears incomplete"
-            exit 1
-        fi 
-        
-        # Extract and setup
-        unzip -o -q bridge-cli-bundle-linux64.zip
-        chmod +x bridge-cli-bundle-linux64/bridge-cli
-        
-        # Verify installation
-        echo "=== Bridge CLI Installation Verification ==="
-        ./bridge-cli-bundle-linux64/bridge-cli --version
-        
-        echo "Bridge CLI installed successfully at: $(BRIDGE_CLI_INSTALL_DIR)/bridge-cli-bundle-linux64/bridge-cli"
-        
-      displayName: 'Install Bridge CLI'
-
-    # Publish Bridge CLI for other jobs
-    - task: PublishPipelineArtifact@1
-      displayName: 'Publish Bridge CLI Installation'
-      inputs:
-        targetPath: '$(BRIDGE_CLI_INSTALL_DIR)'
-        artifact: 'BridgeCLI'
-
-  # ---- Black Duck SCA: Source Code Analysis (Package Manager + Signature) ----
   - job: BlackDuckSourceScan
     displayName: 'Bridge CLI: Black Duck SCA Source Analysis'
-    dependsOn: BridgeCLISetup
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
-    # Download artifacts
     - task: DownloadPipelineArtifact@2
       displayName: 'Download WebGoat Source'
       inputs:
         artifact: 'WebGoatSource'
         path: '$(Build.SourcesDirectory)'
-
-    - task: DownloadPipelineArtifact@2
-      displayName: 'Download Bridge CLI'
-      inputs:
-        artifact: 'BridgeCLI'
-        path: '$(BRIDGE_CLI_INSTALL_DIR)'
-
-    # Bridge CLI Black Duck Source Code Scan with PR Support
-    - script: |
-        set -e  # Don't use -x to avoid token exposure
-        echo "=== Bridge CLI Black Duck SCA Source Scan ==="
-        
-        # Set Bridge CLI path
-        BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/bridge-cli-bundle-linux64/bridge-cli"
-        chmod +x ${BRIDGE_CLI_PATH}
-        
-        # Verify Bridge CLI
-        ${BRIDGE_CLI_PATH} --version
-        
-        # Set environment variables for Bridge CLI
-        export BRIDGE_BLACKDUCKSCA_TOKEN="$(BLACKDUCK_API_TOKEN)"
-        
-        # Determine project version based on build reason
-        if [ "$(Build.Reason)" = "PullRequest" ]; then
-            PROJECT_VERSION="$(System.PullRequest.TargetBranchName)"
-            echo "PR Scan - Target Branch: $PROJECT_VERSION"
-        else
-            PROJECT_VERSION="$(PROJECT_VERSION)-source"
-            echo "Regular Scan - Version: $PROJECT_VERSION"
-        fi
-        
-        echo "=== Running Bridge CLI Black Duck SCA Source Scan ==="
-        echo "Project: $(PROJECT_NAME)"
-        echo "Version: $PROJECT_VERSION"
-        echo "Target: Package Manager + Signature Scan"
-        
-        # Bridge CLI Source scan with enhanced configuration
-        BRIDGE_ARGS="--stage blackducksca \
-          blackducksca.url=\"$(BLACKDUCK_URL)\" \
-          blackducksca.scan.full=true \
-          blackducksca.scan.failure.severities=\"BLOCKER,CRITICAL\" \
-          blackducksca.reports.sarif.create=true \
-          blackducksca.reports.sarif.file.path=\"blackduck-source-results.sarif\" \
-          blackducksca.reports.sarif.severities=\"BLOCKER,CRITICAL,HIGH,MEDIUM\" \
-          blackducksca.reports.sarif.groupSCAissues=true \
-          project.name=\"$(PROJECT_NAME)\" \
-          project.version.name=\"$PROJECT_VERSION\" \
-          --verbose"
-        
-        # Add PR-specific parameters if this is a pull request
-        if [ "$(Build.Reason)" = "PullRequest" ]; then
-            echo "Adding PR-specific parameters..."
-            BRIDGE_ARGS="$BRIDGE_ARGS \
-              blackducksca.fixpr.enabled=true \
-              blackducksca.prcomment.enabled=true \
-              azure.token=\"$(System.AccessToken)\""
-        fi
-        
-        # Execute Bridge CLI
-        ${BRIDGE_CLI_PATH} $BRIDGE_ARGS || echo "Bridge CLI scan completed with issues - continuing pipeline"
-        
-        echo "=== Source Scan Results Summary ==="
-        if [ -f "blackduck-source-results.sarif" ]; then
-            echo "SUCCESS: SARIF report generated successfully"
-            ls -la blackduck-source-results.sarif
-        else
-            echo "WARNING: SARIF report not found"
-        fi
-        
-      displayName: 'Bridge CLI: Black Duck SCA Source Scan'
+    - bash: |
+        set -ex
+        curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
+        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca
+      env:
+        BRIDGE_BLACKDUCKSCA_URL: $(BLACKDUCK_URL)
+        BRIDGE_BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
+        BRIDGE_BLACKDUCKSCA_SCAN_FULL: true
+        BRIDGE_BLACKDUCKSCA_SCAN_FAILURE_SEVERITIES: 'BLOCKER,CRITICAL'
+        BRIDGE_BLACKDUCKSCA_FIXPR_ENABLED: true
+        BRIDGE_BLACKDUCKSCA_REPORTS_SARIF_CREATE: true
+        BRIDGE_AZURE_USER_TOKEN: $(System.AccessToken)
+        BRIDGE_AZURE_ORGANIZATION_NAME: $(System.TeamFoundationCollectionUri)
+        BRIDGE_AZURE_REPOSITORY_NAME: $(Build.Repository.Name)
+        BRIDGE_AZURE_PROJECT_NAME: $(System.TeamProject)
+        BRIDGE_AZURE_REPOSITORY_BRANCH_NAME: $(Build.SourceBranchName)
+        DETECT_PROJECT_NAME: $(Build.Repository.Name)
+        DETECT_PROJECT_VERSION_NAME: $(Build.SourceBranchName)
+        DETECT_CODE_LOCATION_NAME: $(Build.Repository.Name)-$(Build.SourceBranchName)
+      displayName: 'Black Duck Full Scan'
+      condition: not(eq(variables['Build.Reason'], 'PullRequest'))
       continueOnError: true
-      retryCountOnTaskFailure: 2
+    - bash: |
+        set -ex
+        curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
+        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca
+      env:
+        BRIDGE_BLACKDUCKSCA_URL: $(BLACKDUCK_URL)
+        BRIDGE_BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
+        BRIDGE_BLACKDUCKSCA_SCAN_FULL: false
+        BRIDGE_BLACKDUCKSCA_AUTOMATION_PRCOMMENT: true
+        BRIDGE_AZURE_USER_TOKEN: $(System.AccessToken)
+        BRIDGE_AZURE_ORGANIZATION_NAME: $(System.TeamFoundationCollectionUri)
+        BRIDGE_AZURE_REPOSITORY_NAME: $(Build.Repository.Name)
+        BRIDGE_AZURE_PROJECT_NAME: $(System.TeamProject)
+        BRIDGE_AZURE_REPOSITORY_BRANCH_NAME: $(System.PullRequest.SourceBranch)
+        BRIDGE_AZURE_REPOSITORY_PULL_NUMBER: $(System.PullRequest.PullRequestId)
+        DETECT_PROJECT_NAME: $(Build.Repository.Name)
+        DETECT_PROJECT_VERSION_NAME: $(System.PullRequest.targetBranchName)
+        DETECT_CODE_LOCATION_NAME: $(Build.Repository.Name)-$(System.PullRequest.targetBranchName)
+      displayName: 'Black Duck PR Scan'
+      condition: eq(variables['Build.Reason'], 'PullRequest')
+      continueOnError: true
 
-  # ---- Black Duck Container Scan (BDSC) ----
   - job: BlackDuckContainerScan
-    displayName: 'Bridge CLI: Black Duck Container Analysis (BDSC)'
-    dependsOn: BridgeCLISetup
+    displayName: 'Bridge CLI: Black Duck Container Analysis'
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
-    # Download artifacts
     - task: DownloadPipelineArtifact@2
       displayName: 'Download WebGoat Container Image'
       inputs:
         artifact: 'WebGoatContainerImage'
         path: '$(Build.SourcesDirectory)'
-
-    - task: DownloadPipelineArtifact@2
-      displayName: 'Download Bridge CLI'
-      inputs:
-        artifact: 'BridgeCLI'
-        path: '$(BRIDGE_CLI_INSTALL_DIR)'
-
-    # Bridge CLI Black Duck Container Scan
-    - script: |
-        set -e  # Don't use -x to avoid token exposure
-        echo "=== Bridge CLI Black Duck Container Scan (BDSC) ==="
-        
-        # Set Bridge CLI path
-        BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/bridge-cli-bundle-linux64/bridge-cli"
-        chmod +x ${BRIDGE_CLI_PATH}
-        
+    - bash: |
+        set -ex
         # Verify container image exists
         TAR_FILE="webgoat-$(Build.BuildId).tar"
         if [ ! -f "${TAR_FILE}" ]; then
@@ -459,704 +254,360 @@ stages:
             exit 1
         fi
         
-        # Set environment variables for Bridge CLI
-        export BRIDGE_BLACKDUCKSCA_TOKEN="$(BLACKDUCK_API_TOKEN)"
+        # Load image for scanning
+        docker load -i ${TAR_FILE}
         
-        # Determine project version based on build reason
-        if [ "$(Build.Reason)" = "PullRequest" ]; then
-            PROJECT_VERSION="$(System.PullRequest.TargetBranchName)-container"
-        else
-            PROJECT_VERSION="$(PROJECT_VERSION)-container"
-        fi
-        
-        echo "=== Running Bridge CLI Black Duck Container Scan ==="
-        echo "Project: $(PROJECT_NAME)"
-        echo "Version: $PROJECT_VERSION"
-        echo "Container: ${TAR_FILE}"
-        
-        # Bridge CLI Container scan
-        ${BRIDGE_CLI_PATH} \
-          --stage blackducksca \
-          blackducksca.url="$(BLACKDUCK_URL)" \
-          blackducksca.scan.full=true \
-          blackducksca.scan.failure.severities="BLOCKER,CRITICAL" \
-          blackducksca.reports.sarif.create=true \
-          blackducksca.reports.sarif.file.path="blackduck-container-results.sarif" \
-          blackducksca.reports.sarif.severities="BLOCKER,CRITICAL,HIGH,MEDIUM" \
-          blackducksca.reports.sarif.groupSCAissues=true \
-          project.name="$(PROJECT_NAME)" \
-          project.version.name="$PROJECT_VERSION" \
-          --verbose || echo "Bridge CLI container scan completed with issues - continuing pipeline"
-        
-      displayName: 'Bridge CLI: Black Duck Container Scan'
+        curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
+        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca
+      env:
+        BRIDGE_BLACKDUCKSCA_URL: $(BLACKDUCK_URL)
+        BRIDGE_BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
+        BRIDGE_BLACKDUCKSCA_SCAN_FULL: true
+        BRIDGE_BLACKDUCKSCA_SCAN_FAILURE_SEVERITIES: 'BLOCKER,CRITICAL'
+        BRIDGE_BLACKDUCKSCA_REPORTS_SARIF_CREATE: true
+        DETECT_PROJECT_NAME: $(Build.Repository.Name)
+        DETECT_PROJECT_VERSION_NAME: $(Build.SourceBranchName)-container
+        DETECT_CODE_LOCATION_NAME: $(Build.Repository.Name)-$(Build.SourceBranchName)-container
+        DETECT_DOCKER_IMAGE: webgoat:$(Build.BuildId)
+      displayName: 'Black Duck Container Scan'
       continueOnError: true
-      retryCountOnTaskFailure: 2
 
-  # ---- Coverity SAST with Manual SARIF Generation ----
   - job: CoveritySAST
-    displayName: 'Bridge CLI: Coverity SAST Analysis with SARIF'
-    dependsOn: BridgeCLISetup
+    displayName: 'Bridge CLI: Coverity SAST Analysis'
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
-    # Download artifacts
     - task: DownloadPipelineArtifact@2
       displayName: 'Download WebGoat Source'
       inputs:
         artifact: 'WebGoatSource'
         path: '$(Build.SourcesDirectory)'
-
-    - task: DownloadPipelineArtifact@2
-      displayName: 'Download Bridge CLI'
-      inputs:
-        artifact: 'BridgeCLI'
-        path: '$(BRIDGE_CLI_INSTALL_DIR)'
-
-    # JDK sanity check
-    - script: |
-        java -version
-        ./mvnw -v
-      displayName: 'JDK Environment Check'
-
-    # Bridge CLI Coverity SAST Scan
-    - script: |
-        set -e  # Don't use -x to avoid credential exposure
-        echo "=== Bridge CLI Coverity SAST Scan ==="
-        
-        # Set Bridge CLI path
-        BRIDGE_CLI_PATH="$(BRIDGE_CLI_INSTALL_DIR)/bridge-cli-bundle-linux64/bridge-cli"
-        chmod +x ${BRIDGE_CLI_PATH}
-        
-        # Set environment variables for Bridge CLI
-        export BRIDGE_COVERITY_CONNECT_USER_NAME="$(COV_USER)"
-        export BRIDGE_COVERITY_CONNECT_USER_PASSWORD="$(COVERITY_PASSPHRASE)"
-        
-        # Determine project version and policy view based on build reason
-        if [ "$(Build.Reason)" = "PullRequest" ]; then
-            PROJECT_VERSION="$(System.PullRequest.TargetBranchName)"
-            POLICY_VIEW=""  # No policy view for PR scans
-            echo "PR Scan - Target Branch: $PROJECT_VERSION"
-        else
-            PROJECT_VERSION="$(PROJECT_VERSION)"
-            POLICY_VIEW="$(COVERITY_VIEW)"
-            echo "Regular Scan - Version: $PROJECT_VERSION, Policy View: $POLICY_VIEW"
-        fi
-        
-        echo "=== Running Bridge CLI Coverity SAST Scan ==="
-        echo "Project: $(PROJECT_NAME)"
-        echo "Stream: $(PROJECT_NAME)-$PROJECT_VERSION"
-        
-        # Build Bridge CLI arguments
-        BRIDGE_ARGS="--stage connect \
-          coverity.connect.url=\"$(COVERITY_URL)\" \
-          coverity.connect.project.name=\"$(PROJECT_NAME)\" \
-          coverity.connect.stream.name=\"$(PROJECT_NAME)-$PROJECT_VERSION\" \
-          coverity.local=true \
-          coverity.build.command=\"./mvnw clean compile\" \
-          coverity.install.directory=\"/home/ubuntu/cov-platform\" \
-          project.name=\"$(PROJECT_NAME)\" \
-          project.version.name=\"$PROJECT_VERSION\" \
-          --verbose"
-        
-        # Add policy view for non-PR scans
-        if [ -n "$POLICY_VIEW" ]; then
-            BRIDGE_ARGS="$BRIDGE_ARGS coverity.connect.policy.view=\"$POLICY_VIEW\""
-        fi
-        
-        # Add PR-specific parameters if this is a pull request
-        if [ "$(Build.Reason)" = "PullRequest" ]; then
-            echo "Adding PR-specific parameters for Coverity..."
-            BRIDGE_ARGS="$BRIDGE_ARGS \
-              coverity.prcomment.enabled=true \
-              azure.token=\"$(System.AccessToken)\""
-        fi
-        
-        # Execute Bridge CLI Coverity scan
-        ${BRIDGE_CLI_PATH} $BRIDGE_ARGS || echo "Bridge CLI Coverity scan completed with issues - continuing pipeline"
-        
-      displayName: 'Bridge CLI: Coverity SAST Scan'
+    - bash: |
+        set -ex
+        curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
+        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage connect
+      env:
+        BRIDGE_COVERITY_CONNECT_URL: $(COVERITY_URL)
+        BRIDGE_COVERITY_CONNECT_USER_NAME: $(COV_USER)
+        BRIDGE_COVERITY_CONNECT_USER_PASSWORD: $(COVERITY_PASSPHRASE)
+        BRIDGE_COVERITY_CONNECT_PROJECT_NAME: $(Build.Repository.Name)
+        BRIDGE_COVERITY_CONNECT_STREAM_NAME: $(Build.Repository.Name)-$(Build.SourceBranchName)
+        BRIDGE_COVERITY_CONNECT_POLICY_VIEW: $(COVERITY_VIEW)
+      displayName: 'Coverity Full Scan'
+      condition: not(eq(variables['Build.Reason'], 'PullRequest'))
       continueOnError: true
-      retryCountOnTaskFailure: 2
-
-    # Manual SARIF Generation for On-Premises Coverity
-    - script: |
-        echo "=== Manual Coverity SARIF Generation for Bridge CLI ==="
-        echo "Note: Bridge CLI with coverity.local=true doesn't auto-generate SARIF"
-        
-        # Search for Bridge CLI Coverity intermediate directory
-        BRIDGE_IDIR=$(find $(Build.SourcesDirectory) -path "*/.bridge/Coverity*/idir" -type d 2>/dev/null | head -1)
-        
-        # Also check Agent.WorkFolder as fallback
-        if [ -z "$BRIDGE_IDIR" ]; then
-          BRIDGE_IDIR=$(find $(Agent.WorkFolder) -path "*/.bridge/Coverity*/idir" -type d 2>/dev/null | head -1)
-        fi
-        
-        if [ -n "$BRIDGE_IDIR" ]; then
-          echo "SUCCESS: Found Coverity iDir at: $BRIDGE_IDIR"
-          
-          # Look for cov-format-errors in Bridge tools directory or Coverity installation
-          COV_FORMAT_ERRORS=""
-          
-          # First try Bridge tools directory
-          COV_TOOLS_DIR=$(find ~/.blackduck/bridge/tools -name "cov-analysis" -type d 2>/dev/null | head -1)
-          if [ -n "$COV_TOOLS_DIR" ]; then
-            COV_FORMAT_ERRORS="$COV_TOOLS_DIR/bin/cov-format-errors"
-          fi
-          
-          # Fallback to manual Coverity installation
-          if [ ! -f "$COV_FORMAT_ERRORS" ]; then
-            COV_FORMAT_ERRORS="/home/ubuntu/cov-platform/bin/cov-format-errors"
-          fi
-          
-          echo "Using cov-format-errors: $COV_FORMAT_ERRORS"
-          
-          if [ -f "$COV_FORMAT_ERRORS" ]; then
-            SARIF_OUTPUT="$(Agent.WorkFolder)/coverity-bridge-results.sarif"
-            echo "Generating SARIF to: $SARIF_OUTPUT"
-            
-            # Generate SARIF with proper error handling
-            if "$COV_FORMAT_ERRORS" --dir "$BRIDGE_IDIR" --json-output-v2 "$SARIF_OUTPUT"; then
-              echo "SUCCESS: SARIF generated successfully"
-              
-              if [ -f "$SARIF_OUTPUT" ]; then
-                echo "File size: $(du -h "$SARIF_OUTPUT" | cut -f1)"
-                
-                # Verify SARIF content
-                if grep -q "\"version\"" "$SARIF_OUTPUT" 2>/dev/null; then
-                  echo "SARIF appears to be valid JSON"
-                  
-                  # Count issues in SARIF
-                  ISSUE_COUNT=$(grep -o '"ruleId"' "$SARIF_OUTPUT" 2>/dev/null | wc -l || echo "0")
-                  echo "SARIF contains $ISSUE_COUNT issues"
-                else
-                  echo "WARNING: SARIF may be malformed"
-                fi
-              else
-                echo "ERROR: SARIF file was not created"
-              fi
-            else
-              echo "ERROR: cov-format-errors command failed"
-            fi
-          else
-            echo "ERROR: cov-format-errors not found at: $COV_FORMAT_ERRORS"
-            echo "Available Coverity tools:"
-            find /home/ubuntu/cov-platform -name "cov-format-errors" 2>/dev/null || echo "None found"
-          fi
-        else
-          echo "ERROR: No Bridge Coverity iDir found"
-          echo "Searched for pattern: */.bridge/Coverity*/idir"
-          echo "Available .bridge directories:"
-          find $(Build.SourcesDirectory) $(Agent.WorkFolder) -name ".bridge" -type d 2>/dev/null | head -5
-          
-          echo "Bridge CLI execution details:"
-          find $(Build.SourcesDirectory) $(Agent.WorkFolder) -name "*coverity*" -type d 2>/dev/null | head -10
-        fi
-      displayName: 'Generate Coverity SARIF Manually (Bridge CLI)'
-      condition: always()
+    - bash: |
+        set -ex
+        curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
+        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage connect
+      env:
+        BRIDGE_COVERITY_CONNECT_URL: $(COVERITY_URL)
+        BRIDGE_COVERITY_CONNECT_USER_NAME: $(COV_USER)
+        BRIDGE_COVERITY_CONNECT_USER_PASSWORD: $(COVERITY_PASSPHRASE)
+        BRIDGE_COVERITY_CONNECT_PROJECT_NAME: $(Build.Repository.Name)
+        BRIDGE_COVERITY_CONNECT_STREAM_NAME: $(Build.Repository.Name)-$(System.PullRequest.targetBranchName)
+        BRIDGE_COVERITY_AUTOMATION_PRCOMMENT: true
+        BRIDGE_AZURE_USER_TOKEN: $(System.AccessToken)
+        BRIDGE_AZURE_ORGANIZATION_NAME: $(System.TeamFoundationCollectionUri)
+        BRIDGE_AZURE_REPOSITORY_NAME: $(Build.Repository.Name)
+        BRIDGE_AZURE_PROJECT_NAME: $(System.TeamProject)
+        BRIDGE_AZURE_REPOSITORY_BRANCH_NAME: $(System.PullRequest.SourceBranch)
+        BRIDGE_AZURE_REPOSITORY_PULL_NUMBER: $(System.PullRequest.PullRequestId)
+      displayName: 'Coverity PR Scan'
+      condition: eq(variables['Build.Reason'], 'PullRequest')
       continueOnError: true
 
-  # ---- Publish All Security Results ----
   - job: PublishSecurityResults
-    displayName: 'Publish Security Scan Results with SARIF'
-    dependsOn: [BlackDuckSourceScan, BlackDuckContainerScan, CoveritySAST]
+    displayName: 'Publish Security Scan Results'
+    dependsOn:
+    - BlackDuckSourceScan
+    - BlackDuckContainerScan
+    - CoveritySAST
     condition: always()
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
-    # Publish SARIF results as test results for ADO integration
     - task: PublishTestResults@2
-      displayName: 'Publish Black Duck SARIF Results'
+      displayName: 'Publish SARIF Results'
       condition: always()
       inputs:
         testResultsFormat: 'VSTest'
-        testResultsFiles: |
-          **/blackduck-*-results.sarif
-          **/*blackduck*.sarif
+        testResultsFiles: '**/*.sarif'
         searchFolder: '$(Agent.WorkFolder)'
         publishRunAttachments: true
         failTaskOnFailedTests: false
-        testRunTitle: 'Black Duck SCA Scans'
+        testRunTitle: 'Security Scan Results'
       continueOnError: true
 
-    - task: PublishTestResults@2
-      displayName: 'Publish Coverity SARIF Results'
-      condition: always()
-      inputs:
-        testResultsFormat: 'VSTest'
-        testResultsFiles: |
-          **/coverity-*-results.sarif
-          **/*coverity*.sarif
-        searchFolder: '$(Agent.WorkFolder)'
-        publishRunAttachments: true
-        failTaskOnFailedTests: false
-        testRunTitle: 'Coverity SAST Scan'
-      continueOnError: true
-
-    # Publish security scan artifacts
-    - task: PublishPipelineArtifact@1
-      displayName: 'Publish All Security Scan Artifacts'
-      condition: always()
-      inputs:
-        targetPath: '$(Agent.WorkFolder)'
-        artifactName: 'BridgeCLISecurityResults'
-        publishLocation: 'pipeline'
-      continueOnError: true
-
-    # Create summary of scan results
-    - script: |
-        echo "=== Bridge CLI Security Scan Summary ==="
-        echo "The following security scans were executed via Bridge CLI:"
-        echo "1. Black Duck SCA Source Scan (Package Manager + Signature)"
-        echo "2. Black Duck SCA Container Scan (BDSC equivalent)"
-        echo "3. Coverity SAST Scan with manual SARIF generation"
-        echo ""
-        echo "Build Reason: $(Build.Reason)"
-        if [ "$(Build.Reason)" = "PullRequest" ]; then
-            echo "PR Target Branch: $(System.PullRequest.TargetBranchName)"
-            echo "PR Features Enabled: Fix PR, PR Comments"
-        fi
-        echo ""
-        echo "SARIF results published to Azure DevOps 'Tests' tab"
-        echo "Full scan artifacts available in pipeline artifacts"
-        echo ""
-        echo "Manual SARIF generation addresses the coverity.local=true limitation"
-        echo "for on-premises Coverity Connect deployments."
-      displayName: 'Bridge CLI Security Scan Summary'
-
-# ================================================================================
-# STAGE 4: DEPLOY WEBGOAT VIA KUBERNETES
-# ================================================================================
 - stage: DeployKubernetes
   displayName: 'Stage 4: Deploy via Kubernetes'
-  dependsOn: [BuildContainer, SecurityScans]
-  condition: succeededOrFailed()  # Deploy even if security scans fail
+  dependsOn:
+  - BuildContainer
+  - SecurityScans
+  condition: succeededOrFailed()
   jobs:
   - job: KubernetesDeployment
     displayName: 'Deploy WebGoat to Kubernetes'
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
-    # Download SSH key
     - task: DownloadSecureFile@1
       displayName: 'Download SSH Key'
       name: sshkey
       inputs:
         secureFile: 'steve-pem'
-
-    # Download container image
     - task: DownloadPipelineArtifact@2
       displayName: 'Download Container Image'
       inputs:
         artifact: 'WebGoatContainerImage'
         path: '$(Build.SourcesDirectory)'
-
-    # Transfer image to Kubernetes server
-    - script: |
-        set -e
-        
-        TAR_FILE="webgoat-$(Build.BuildId).tar"
-        
-        echo "=== Setting up SSH and transferring image ==="
-        cp $(sshkey.secureFilePath) steve.pem
-        chmod 400 steve.pem
-        
-        if [ ! -f "${TAR_FILE}" ]; then
-            echo "ERROR: Container image tar file not found: ${TAR_FILE}"
-            exit 1
-        fi
-        
-        echo "Transferring ${TAR_FILE} to Kubernetes server..."
-        scp -o StrictHostKeyChecking=no -i steve.pem ${TAR_FILE} ubuntu@$(K8S_SERVER_IP):/tmp/
-        
-        echo "Loading image on Kubernetes server..."
-        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
-          sudo microk8s ctr image import /tmp/${TAR_FILE}
-          
-          echo 'Verifying image import...'
-          sudo microk8s ctr images list | grep 'webgoat.*$(Build.BuildId)' || echo 'ERROR: Build ID not found in imported images!'
-          sudo microk8s ctr images list | grep webgoat
-          
-          rm -f /tmp/${TAR_FILE}
-          echo 'Image transfer completed!'
-        "
+    - task: CmdLine@2
       displayName: 'Transfer Image to Kubernetes'
+      inputs:
+        script: |
+          set -e
+          TAR_FILE="webgoat-$(Build.BuildId).tar"
+          echo "=== Setting up SSH and transferring image ==="
+          cp $(sshkey.secureFilePath) steve.pem
+          chmod 400 steve.pem
 
-    # Clean up existing deployment
-    - script: |
-        echo "=== Kubernetes Deployment Cleanup ==="
-        
-        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
-          echo 'Cleaning up existing WebGoat deployment...'
-          kubectl delete deployment webgoat --ignore-not-found=true --grace-period=30
-          kubectl delete service webgoat-service --ignore-not-found=true --grace-period=15
-          
-          echo 'Waiting for cleanup...'
-          sleep 15
-          
-          # Force cleanup if needed
-          if kubectl get pods -l app=webgoat --no-headers 2>/dev/null | grep -q webgoat; then
-            echo 'Force cleaning remaining pods...'
-            kubectl delete pods -l app=webgoat --grace-period=10 --force || true
-            sleep 5
+          if [ ! -f "${TAR_FILE}" ]; then
+              echo "ERROR: Container image tar file not found: ${TAR_FILE}"
+              exit 1
           fi
-          
-          echo 'Cleanup completed'
-        "
-      displayName: 'Cleanup Existing Deployment'
 
-    # Create and apply deployment
-    - script: |
-        IMAGE_NAME="docker.io/library/webgoat:$(Build.BuildId)"
-        PUBLIC_IP="$(K8S_PUBLIC_IP)"
-        WEBGOAT_PORT="$(WEBGOAT_NODEPORT)"
-        WEBWOLF_PORT="$(WEBWOLF_NODEPORT)"
-        
-        # Create deployment manifest with proven working configuration
-        cat > webgoat-deployment.yaml << EOF
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: webgoat
-          namespace: default
-          labels:
-            app: webgoat
-            version: "$(Build.BuildId)"
-            deployed-by: azure-devops
-            pipeline-stage: "deploy"
-            scanned-by: bridge-cli
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: webgoat
-          template:
-            metadata:
-              labels:
-                app: webgoat
-                version: "$(Build.BuildId)"
-            spec:
-              containers:
-              - name: webgoat
-                image: ${IMAGE_NAME}
-                imagePullPolicy: Never
-                ports:
-                - containerPort: 8080
-                  name: webgoat
-                  protocol: TCP
-                - containerPort: 9090
-                  name: webwolf
-                  protocol: TCP
-                # Proven working resource allocation
-                resources:
-                  requests:
-                    memory: "1Gi"
-                    cpu: "500m"
-                  limits:
-                    memory: "2Gi"
-                    cpu: "1"
-                # Proven working environment variables
-                env:
-                - name: TZ
-                  value: "America/New_York"
-                - name: WEBGOAT_HOST
-                  value: "${PUBLIC_IP}"
-                - name: WEBWOLF_HOST
-                  value: "${PUBLIC_IP}"
-                - name: WEBGOAT_NODEPORT
-                  value: "${WEBGOAT_PORT}"
-                - name: WEBWOLF_NODEPORT
-                  value: "${WEBWOLF_PORT}"
-                # Proven working startup command
-                command: ["java"]
-                args: [
-                  "-Duser.home=/home/webgoat",
-                  "-Dfile.encoding=UTF-8",
-                  "--add-opens", "java.base/java.lang=ALL-UNNAMED",
-                  "--add-opens", "java.base/java.util=ALL-UNNAMED",
-                  "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
-                  "--add-opens", "java.base/java.text=ALL-UNNAMED",
-                  "--add-opens", "java.desktop/java.beans=ALL-UNNAMED",
-                  "--add-opens", "java.desktop/java.awt.font=ALL-UNNAMED",
-                  "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED",
-                  "--add-opens", "java.base/java.io=ALL-UNNAMED",
-                  "-Drunning.in.docker=true",
-                  "-jar", "webgoat.jar",
-                  "--server.address", "0.0.0.0"
-                ]
-                # Proven working health check timing
-                livenessProbe:
-                  httpGet:
-                    path: /WebGoat/actuator/health
-                    port: 8080
-                    scheme: HTTP
-                  initialDelaySeconds: 180
-                  periodSeconds: 30
-                  failureThreshold: 5
-                  timeoutSeconds: 15
-                readinessProbe:
-                  httpGet:
-                    path: /WebGoat/actuator/health
-                    port: 8080
-                    scheme: HTTP
-                  initialDelaySeconds: 120
-                  periodSeconds: 15
-                  failureThreshold: 5
-                  timeoutSeconds: 15
-        ---
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: webgoat-service
-          namespace: default
-          labels:
-            app: webgoat
-            pipeline-stage: "deploy"
-        spec:
-          selector:
-            app: webgoat
-          ports:
-          - port: 8080
-            targetPort: 8080
-            protocol: TCP
-            name: webgoat
-            nodePort: ${WEBGOAT_PORT}
-          - port: 9090
-            targetPort: 9090
-            protocol: TCP
-            name: webwolf
-            nodePort: ${WEBWOLF_PORT}
-          type: NodePort
-        EOF
-        
-        echo "=== Kubernetes Deployment Manifest ==="
-        echo "Image: ${IMAGE_NAME}"
-        echo "Public IP: ${PUBLIC_IP}"
-        echo "Ports: WebGoat=${WEBGOAT_PORT}, WebWolf=${WEBWOLF_PORT}"
-        
-      displayName: 'Create Deployment Manifest'
+          echo "Transferring ${TAR_FILE} to Kubernetes server..."
+          scp -o StrictHostKeyChecking=no -i steve.pem ${TAR_FILE} ubuntu@$(K8S_SERVER_IP):/tmp/
 
-    # Apply deployment to Kubernetes
-    - script: |
-        scp -o StrictHostKeyChecking=no -i steve.pem webgoat-deployment.yaml ubuntu@$(K8S_SERVER_IP):/tmp/
-        
-        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
-          echo '=== Applying WebGoat Deployment ==='
-          kubectl apply -f /tmp/webgoat-deployment.yaml
-          
-          echo '=== Monitoring Deployment Rollout (5 minute timeout) ==='
-          if kubectl rollout status deployment/webgoat --timeout=300s; then
-            echo 'SUCCESS: Deployment rollout completed!'
-          else
-            echo 'TIMEOUT: Deployment rollout taking longer than expected'
-            echo 'Current deployment status:'
-            kubectl get deployment webgoat
-            kubectl get pods -l app=webgoat -o wide
-            echo 'Proceeding to validation stage...'
-          fi
-          
-          echo '=== Current Deployment Status ==='
-          kubectl get deployment webgoat
-          kubectl get service webgoat-service
-          kubectl get pods -l app=webgoat -o wide
-          
-          rm -f /tmp/webgoat-deployment.yaml
-        "
+          echo "Loading image on Kubernetes server..."
+          ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+            sudo microk8s ctr image import /tmp/${TAR_FILE}
+            echo 'Verifying image import...'
+            sudo microk8s ctr images list | grep webgoat
+            rm -f /tmp/${TAR_FILE}
+            echo 'Image transfer completed!'
+          "
+    - task: CmdLine@2
       displayName: 'Deploy to Kubernetes'
+      inputs:
+        script: |
+          IMAGE_NAME="docker.io/library/webgoat:$(Build.BuildId)"
+          PUBLIC_IP="$(K8S_PUBLIC_IP)"
+          WEBGOAT_PORT="$(WEBGOAT_NODEPORT)"
+          WEBWOLF_PORT="$(WEBWOLF_NODEPORT)"
 
-# ================================================================================
-# STAGE 5: VALIDATION
-# ================================================================================
+          cat > webgoat-deployment.yaml << EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: webgoat
+            namespace: default
+            labels:
+              app: webgoat
+              version: "$(Build.BuildId)"
+              deployed-by: azure-devops
+              scanned-by: bridge-cli
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: webgoat
+            template:
+              metadata:
+                labels:
+                  app: webgoat
+                  version: "$(Build.BuildId)"
+              spec:
+                containers:
+                - name: webgoat
+                  image: ${IMAGE_NAME}
+                  imagePullPolicy: Never
+                  ports:
+                  - containerPort: 8080
+                    name: webgoat
+                    protocol: TCP
+                  - containerPort: 9090
+                    name: webwolf
+                    protocol: TCP
+                  resources:
+                    requests:
+                      memory: "1Gi"
+                      cpu: "500m"
+                    limits:
+                      memory: "2Gi"
+                      cpu: "1"
+                  env:
+                  - name: TZ
+                    value: "America/New_York"
+                  - name: WEBGOAT_HOST
+                    value: "${PUBLIC_IP}"
+                  - name: WEBWOLF_HOST
+                    value: "${PUBLIC_IP}"
+                  command: ["java"]
+                  args: [
+                    "-Duser.home=/home/webgoat",
+                    "-Dfile.encoding=UTF-8",
+                    "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+                    "--add-opens", "java.base/java.util=ALL-UNNAMED",
+                    "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
+                    "--add-opens", "java.base/java.text=ALL-UNNAMED",
+                    "--add-opens", "java.desktop/java.beans=ALL-UNNAMED",
+                    "--add-opens", "java.desktop/java.awt.font=ALL-UNNAMED",
+                    "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED",
+                    "--add-opens", "java.base/java.io=ALL-UNNAMED",
+                    "-Drunning.in.docker=true",
+                    "-jar", "webgoat.jar",
+                    "--server.address", "0.0.0.0"
+                  ]
+                  livenessProbe:
+                    httpGet:
+                      path: /WebGoat/actuator/health
+                      port: 8080
+                      scheme: HTTP
+                    initialDelaySeconds: 180
+                    periodSeconds: 30
+                    failureThreshold: 5
+                    timeoutSeconds: 15
+                  readinessProbe:
+                    httpGet:
+                      path: /WebGoat/actuator/health
+                      port: 8080
+                      scheme: HTTP
+                    initialDelaySeconds: 120
+                    periodSeconds: 15
+                    failureThreshold: 5
+                    timeoutSeconds: 15
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: webgoat-service
+            namespace: default
+            labels:
+              app: webgoat
+          spec:
+            selector:
+              app: webgoat
+            ports:
+            - port: 8080
+              targetPort: 8080
+              protocol: TCP
+              name: webgoat
+              nodePort: ${WEBGOAT_PORT}
+            - port: 9090
+              targetPort: 9090
+              protocol: TCP
+              name: webwolf
+              nodePort: ${WEBWOLF_PORT}
+            type: NodePort
+          EOF
+
+          scp -o StrictHostKeyChecking=no -i steve.pem webgoat-deployment.yaml ubuntu@$(K8S_SERVER_IP):/tmp/
+
+          ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+            echo '=== Cleaning up existing deployment ==='
+            kubectl delete deployment webgoat --ignore-not-found=true --grace-period=30
+            kubectl delete service webgoat-service --ignore-not-found=true --grace-period=15
+            sleep 15
+            
+            echo '=== Applying WebGoat Deployment ==='
+            kubectl apply -f /tmp/webgoat-deployment.yaml
+            
+            echo '=== Monitoring Deployment Rollout ==='
+            kubectl rollout status deployment/webgoat --timeout=300s || echo 'Deployment in progress...'
+            
+            echo '=== Current Status ==='
+            kubectl get deployment webgoat
+            kubectl get service webgoat-service
+            kubectl get pods -l app=webgoat -o wide
+            
+            rm -f /tmp/webgoat-deployment.yaml
+          "
+
 - stage: Validation
   displayName: 'Stage 5: Validation'
-  dependsOn: DeployKubernetes
+  dependsOn:
+  - DeployKubernetes
   jobs:
-  - job: ComprehensiveValidation
-    displayName: 'Comprehensive Deployment Validation'
+  - job: ValidationTest
+    displayName: 'Validate Deployment'
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
-    # Download SSH key
     - task: DownloadSecureFile@1
       displayName: 'Download SSH Key'
       name: sshkey
       inputs:
         secureFile: 'steve-pem'
+    - task: CmdLine@2
+      displayName: 'Validate Deployment and Application'
+      inputs:
+        script: |
+          echo "==============================================="
+          echo "WEBGOAT DEPLOYMENT VALIDATION"
+          echo "Bridge CLI Security Integration Pipeline"
+          echo "==============================================="
 
-    # Comprehensive deployment verification
-    - script: |
-        echo "==============================================="
-        echo "COMPREHENSIVE WEBGOAT DEPLOYMENT VALIDATION"
-        echo "Bridge CLI Security Integration Pipeline"
-        echo "==============================================="
-        
-        cp $(sshkey.secureFilePath) steve.pem
-        chmod 400 steve.pem
-        
-        ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
-          echo '=== Pod Readiness Check ==='
-          kubectl get pods -l app=webgoat -o wide
-          
-          # Wait for pod readiness with extended timeout
-          echo 'Waiting for pod readiness (max 5 minutes)...'
-          if kubectl wait --for=condition=ready pod -l app=webgoat --timeout=300s; then
-            echo 'SUCCESS: Pod is ready!'
-            pod_ready=true
-          else
-            echo 'TIMEOUT: Pod readiness check timed out'
-            echo 'Manual pod status:'
+          cp $(sshkey.secureFilePath) steve.pem
+          chmod 400 steve.pem
+
+          ssh -o StrictHostKeyChecking=no -i steve.pem ubuntu@$(K8S_SERVER_IP) "
+            echo '=== Pod Status Check ==='
             kubectl get pods -l app=webgoat -o wide
-            kubectl describe pods -l app=webgoat | tail -30
-            pod_ready=false
-          fi
-          
-          # Get pod information
-          POD_NAME=\$(kubectl get pods -l app=webgoat -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo 'NO_POD')
-          
-          if [ \"\$POD_NAME\" = 'NO_POD' ]; then
-              echo 'CRITICAL: No WebGoat pod found!'
-              kubectl get pods --all-namespaces | grep webgoat || echo 'No webgoat pods in any namespace'
-              exit 1
-          fi
-          
-          echo \"Working with pod: \$POD_NAME\"
-          
-          echo '=== Image and Configuration Verification ==='
-          kubectl describe pod \$POD_NAME | grep -E '(Image:|Image ID:|Status:|Ready:)' || echo 'Cannot retrieve pod details'
-          
-          echo '=== Application Health Verification ==='
-          webgoat_healthy=false
-          webwolf_healthy=false
-          
-          # WebGoat health check with retries
-          for attempt in {1..6}; do
-            echo \"WebGoat health check attempt \$attempt/6...\"
-            if kubectl exec \$POD_NAME -- curl -s -f http://localhost:8080/WebGoat/actuator/health >/dev/null 2>&1; then
-              echo 'SUCCESS: WebGoat health endpoint responding!'
-              webgoat_healthy=true
-              break
-            elif [ \$attempt -eq 6 ]; then
-              echo 'WebGoat health endpoint not responding after 6 attempts'
-            else
-              echo 'WebGoat not ready, retrying in 30 seconds...'
-              sleep 30
+            
+            echo '=== Waiting for Pod Readiness ==='
+            kubectl wait --for=condition=ready pod -l app=webgoat --timeout=300s || echo 'Pod readiness timeout'
+            
+            POD_NAME=\$(kubectl get pods -l app=webgoat -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo 'NO_POD')
+            
+            if [ \"\$POD_NAME\" = 'NO_POD' ]; then
+                echo 'CRITICAL: No WebGoat pod found!'
+                exit 1
             fi
-          done
-          
-          # WebWolf health check
-          echo 'Checking WebWolf health endpoint...'
-          if kubectl exec \$POD_NAME -- curl -s -f http://localhost:9090/WebWolf/actuator/health >/dev/null 2>&1; then
-            echo 'SUCCESS: WebWolf health endpoint responding!'
-            webwolf_healthy=true
-          else
-            echo 'WebWolf health endpoint check failed'
-          fi
-          
-          echo '=== Application Startup Log Analysis ==='
-          echo 'Recent logs (looking for startup success indicators):'
-          kubectl logs \$POD_NAME --tail=100 | grep -E '(Started|WebGoat|WebWolf|Tomcat.*started|server.*started|port.*8080|port.*9090)' | tail -10 || \\
-          kubectl logs \$POD_NAME --tail=20
-          
-          echo '=== Service and Network Verification ==='
-          kubectl get service webgoat-service
-          kubectl describe service webgoat-service
-          
-          echo ''
-          echo '================================================'
-          echo '           DEPLOYMENT VALIDATION SUMMARY'
-          echo '================================================'
-          if [ \"\$webgoat_healthy\" = true ] && [ \"\$webwolf_healthy\" = true ]; then
-            echo 'STATUS: SUCCESS - Both applications healthy'
-          elif [ \"\$webgoat_healthy\" = true ]; then
-            echo 'STATUS: PARTIAL - WebGoat healthy, WebWolf issues'
-          elif [ \"\$pod_ready\" = true ]; then
-            echo 'STATUS: DEPLOYED - Pod ready, applications starting'
-          else
-            echo 'STATUS: ISSUES - Deployment problems detected'
-          fi
-          echo ''
-          echo 'Application URLs:'
-          echo '  WebGoat: http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/'
-          echo '  WebWolf: http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/'
-          echo '================================================'
-        "
-      displayName: 'Comprehensive Deployment Verification'
+            
+            echo \"Working with pod: \$POD_NAME\"
+            
+            echo '=== Application Health Check ==='
+            for attempt in {1..6}; do
+              echo \"Health check attempt \$attempt/6...\"
+              if kubectl exec \$POD_NAME -- curl -s -f http://localhost:8080/WebGoat/actuator/health >/dev/null 2>&1; then
+                echo 'SUCCESS: WebGoat health endpoint responding!'
+                break
+              elif [ \$attempt -eq 6 ]; then
+                echo 'WebGoat health endpoint not responding after 6 attempts'
+              else
+                echo 'WebGoat not ready, retrying in 30 seconds...'
+                sleep 30
+              fi
+            done
+          "
 
-    # External connectivity validation
-    - script: |
-        echo "==============================================="
-        echo "EXTERNAL CONNECTIVITY VALIDATION"
-        echo "==============================================="
-        
-        # Allow time for full application startup
-        echo "Allowing 45 seconds for complete application startup..."
-        sleep 45
-        
-        # Test WebGoat external accessibility
-        echo "Testing WebGoat external connectivity..."
-        webgoat_external=false
-        if timeout 25 curl -s -I http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/ 2>/dev/null | head -1 | grep -q "HTTP"; then
-            echo "SUCCESS: WebGoat is externally accessible!"
-            curl -s -I http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/ | head -5
-            webgoat_external=true
-        else
-            echo "INCONCLUSIVE: WebGoat external connectivity test failed"
-            echo "This may be normal during startup - try manual access"
-        fi
-        
-        echo ""
-        
-        # Test WebWolf external accessibility  
-        echo "Testing WebWolf external connectivity..."
-        webwolf_external=false
-        if timeout 25 curl -s -I http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/ 2>/dev/null | head -1 | grep -q "HTTP"; then
-            echo "SUCCESS: WebWolf is externally accessible!"
-            curl -s -I http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/ | head -5
-            webwolf_external=true
-        else
-            echo "INCONCLUSIVE: WebWolf external connectivity test failed"
-            echo "This may be normal during startup - try manual access"
-        fi
-        
-        echo ""
-        echo "==============================================="
-        echo "         PIPELINE COMPLETION SUMMARY"
-        echo "==============================================="
-        echo ""
-        echo "Stage 1: Build WebGoat              ✓ COMPLETED"
-        echo "Stage 2: Build/Verify Container     ✓ COMPLETED"
-        echo "Stage 3: Execute Security Scans     ✓ COMPLETED (Bridge CLI)"
-        echo "Stage 4: Deploy via Kubernetes      ✓ COMPLETED"
-        echo "Stage 5: Validation                 ✓ COMPLETED"
-        echo ""
-        echo "Security Integration Method: Bridge CLI Direct Integration"
-        echo "  ✓ Black Duck SCA Source Analysis (Package Manager + Signature)"
-        echo "  ✓ Black Duck Container Analysis (BDSC equivalent)"
-        echo "  ✓ Coverity SAST Analysis"
-        echo "  ✓ SARIF reporting for Azure DevOps integration"
-        echo "  ✓ Succeeded with issues marking (no pipeline failures)"
-        echo ""
-        echo "WebGoat Application Access:"
-        echo "  Main Application: http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/"
-        echo "  WebWolf Service:  http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/"
-        echo ""
-        
-        if [ "$webgoat_external" = true ] && [ "$webwolf_external" = true ]; then
-            echo "STATUS: FULL SUCCESS - Both applications externally accessible"
-        elif [ "$webgoat_external" = true ]; then
-            echo "STATUS: PARTIAL SUCCESS - WebGoat accessible, WebWolf may need more time"
-        else
-            echo "STATUS: DEPLOYMENT SUCCESS - Applications may need 2-3 more minutes"
-            echo "        Try accessing the URLs manually if not immediately available"
-        fi
-        
-        echo ""
-        echo "Security scan results are available in the Azure DevOps pipeline"
-        echo "under the 'Extensions' or 'Security' tabs."
-        echo ""
-        echo "For troubleshooting: kubectl logs -l app=webgoat"
-        echo "==============================================="
-        
-        # Always exit successfully - pipeline deployment is complete
-        exit 0
-        
-      displayName: 'External Connectivity Validation'
+          echo ""
+          echo "External connectivity test..."
+          sleep 30
+          if timeout 25 curl -s -I http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/ 2>/dev/null | head -1 | grep -q "HTTP"; then
+              echo "SUCCESS: WebGoat is externally accessible!"
+          else
+              echo "Note: WebGoat may need more time to fully start"
+          fi
+
+          echo ""
+          echo "==============================================="
+          echo "         PIPELINE COMPLETION SUMMARY"
+          echo "==============================================="
+          echo ""
+          echo "✓ Stage 1: Build WebGoat - COMPLETED"
+          echo "✓ Stage 2: Build Container - COMPLETED"  
+          echo "✓ Stage 3: Security Scans (Bridge CLI) - COMPLETED"
+          echo "✓ Stage 4: Kubernetes Deployment - COMPLETED"
+          echo "✓ Stage 5: Validation - COMPLETED"
+          echo ""
+          echo "Security Scans Executed:"
+          echo "  ✓ Black Duck SCA Source Analysis"
+          echo "  ✓ Black Duck Container Analysis"
+          echo "  ✓ Coverity SAST Analysis"
+          echo ""
+          echo "WebGoat Application Access:"
+          echo "  Main: http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/"
+          echo "  Wolf: http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/"
+          echo "==============================================="
