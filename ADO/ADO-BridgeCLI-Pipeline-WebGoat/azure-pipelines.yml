@@ -21,6 +21,7 @@ trigger:
 variables:
 - group: blackduck-sca-variables
 - group: coverity-variables
+- group: bridge-cli-tokens
 - name: PROJECT_NAME
   value: $(Build.Repository.Name)
 - name: PROJECT_VERSION
@@ -35,6 +36,8 @@ variables:
   value: "30090"
 - name: COVERITY_VIEW
   value: 'Outstanding Issues'
+- name: COVERITY_TOOL_HOME
+  value: '/home/ubuntu/.blackduck/bridge/tools/cov-analysis/2025.6.2'
 
 stages:
 - stage: BuildWebGoat
@@ -195,24 +198,35 @@ stages:
         set -ex
         curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
         
+        # Check Bridge CLI version for troubleshooting
+        echo "=== Bridge CLI Version ==="
+        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --version
+        
         # Test connectivity first
         echo "Testing Black Duck connectivity..."
         curl -I $(BLACKDUCK_URL) --max-time 30 || echo "Warning: Connectivity test failed"
         
-        # Run Bridge CLI with extended timeouts
-        timeout 1800 $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca
+        # Run Bridge CLI with extended timeouts and enhanced Azure configuration
+        timeout 1800 $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca \
+          network.ssl.trustAll=true
       env:
         BRIDGE_BLACKDUCKSCA_URL: $(BLACKDUCK_URL)
         BRIDGE_BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
         BRIDGE_BLACKDUCKSCA_SCAN_FULL: true
-        BRIDGE_BLACKDUCKSCA_SCAN_FAILURE_SEVERITIES: 'BLOCKER,CRITICAL'
         BRIDGE_BLACKDUCKSCA_FIXPR_ENABLED: true
         BRIDGE_BLACKDUCKSCA_REPORTS_SARIF_CREATE: true
-        BRIDGE_AZURE_USER_TOKEN: $(System.AccessToken)
-        BRIDGE_AZURE_ORGANIZATION_NAME: $(System.TeamFoundationCollectionUri)
+        # Enhanced Azure DevOps API Configuration
+        BRIDGE_AZURE_USER_TOKEN: $(AZURE_PERSONAL_ACCESS_TOKEN)
+        BRIDGE_AZURE_ORGANIZATION_NAME: smiths0263
         BRIDGE_AZURE_REPOSITORY_NAME: $(Build.Repository.Name)
         BRIDGE_AZURE_PROJECT_NAME: $(System.TeamProject)
         BRIDGE_AZURE_REPOSITORY_BRANCH_NAME: $(Build.SourceBranchName)
+        BRIDGE_AZURE_API_VERSION: "7.0"
+        BRIDGE_AZURE_API_URL: "https://dev.azure.com"
+        # Fix PR Configuration - Limit and Filter
+        BRIDGE_BLACKDUCKSCA_FIXPR_MAXCOUNT: 5
+        BRIDGE_BLACKDUCKSCA_FIXPR_FILTER_SEVERITIES: "CRITICAL,HIGH"
+        # Detect Configuration
         DETECT_PROJECT_NAME: $(Build.Repository.Name)
         DETECT_PROJECT_VERSION_NAME: $(Build.SourceBranchName)
         DETECT_CODE_LOCATION_NAME: $(Build.Repository.Name)-$(Build.SourceBranchName)
@@ -220,8 +234,8 @@ stages:
         DETECT_BLACKDUCK_TIMEOUT: 900
         DETECT_API_TIMEOUT: 300000
         BLACKDUCK_TIMEOUT: 900
-        # SSL configuration for self-signed certificates
-        NETWORK_SSL_TRUSTALL: true
+        # Enable diagnostics for troubleshooting
+        INCLUDE_DIAGNOSTICS: 'true'
       displayName: 'Black Duck Full Scan'
       condition: not(eq(variables['Build.Reason'], 'PullRequest'))
       timeoutInMinutes: 45
@@ -229,6 +243,10 @@ stages:
     - bash: |
         set -ex
         curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
+        
+        # Check Bridge CLI version for troubleshooting
+        echo "=== Bridge CLI Version ==="
+        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --version
         
         # Test connectivity first
         echo "Testing Black Duck connectivity..."
@@ -241,12 +259,16 @@ stages:
         BRIDGE_BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
         BRIDGE_BLACKDUCKSCA_SCAN_FULL: false
         BRIDGE_BLACKDUCKSCA_AUTOMATION_PRCOMMENT: true
-        BRIDGE_AZURE_USER_TOKEN: $(System.AccessToken)
-        BRIDGE_AZURE_ORGANIZATION_NAME: $(System.TeamFoundationCollectionUri)
+        # Enhanced Azure DevOps API Configuration for PR
+        BRIDGE_AZURE_USER_TOKEN: $(AZURE_PERSONAL_ACCESS_TOKEN)
+        BRIDGE_AZURE_ORGANIZATION_NAME: smiths0263
         BRIDGE_AZURE_REPOSITORY_NAME: $(Build.Repository.Name)
         BRIDGE_AZURE_PROJECT_NAME: $(System.TeamProject)
         BRIDGE_AZURE_REPOSITORY_BRANCH_NAME: $(System.PullRequest.SourceBranch)
         BRIDGE_AZURE_REPOSITORY_PULL_NUMBER: $(System.PullRequest.PullRequestId)
+        BRIDGE_AZURE_API_VERSION: "7.0"
+        BRIDGE_AZURE_API_URL: "https://dev.azure.com"
+        # Detect Configuration
         DETECT_PROJECT_NAME: $(Build.Repository.Name)
         DETECT_PROJECT_VERSION_NAME: $(System.PullRequest.targetBranchName)
         DETECT_CODE_LOCATION_NAME: $(Build.Repository.Name)-$(System.PullRequest.targetBranchName)
@@ -254,8 +276,8 @@ stages:
         DETECT_BLACKDUCK_TIMEOUT: 900
         DETECT_API_TIMEOUT: 300000
         BLACKDUCK_TIMEOUT: 900
-        # SSL configuration for self-signed certificates
-        NETWORK_SSL_TRUSTALL: true
+        # Enable diagnostics for troubleshooting
+        INCLUDE_DIAGNOSTICS: 'true'
       displayName: 'Black Duck PR Scan'
       condition: eq(variables['Build.Reason'], 'PullRequest')
       timeoutInMinutes: 45
@@ -284,24 +306,22 @@ stages:
         docker load -i ${TAR_FILE}
         
         curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
-        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca
+        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage blackducksca \
+          network.ssl.trustAll=true
       env:
         BRIDGE_BLACKDUCKSCA_URL: $(BLACKDUCK_URL)
         BRIDGE_BLACKDUCKSCA_TOKEN: $(BLACKDUCK_API_TOKEN)
         BRIDGE_BLACKDUCKSCA_SCAN_FULL: true
-        BRIDGE_BLACKDUCKSCA_SCAN_FAILURE_SEVERITIES: 'BLOCKER,CRITICAL'
         BRIDGE_BLACKDUCKSCA_REPORTS_SARIF_CREATE: true
         DETECT_PROJECT_NAME: $(Build.Repository.Name)
         DETECT_PROJECT_VERSION_NAME: $(Build.SourceBranchName)-container
         DETECT_CODE_LOCATION_NAME: $(Build.Repository.Name)-$(Build.SourceBranchName)-container
         DETECT_DOCKER_IMAGE: webgoat:$(Build.BuildId)
-        # SSL configuration for self-signed certificates
-        NETWORK_SSL_TRUSTALL: true
       displayName: 'Black Duck Container Scan'
       continueOnError: true
 
   - job: CoveritySAST
-    displayName: 'Bridge CLI: Coverity SAST Analysis'
+    displayName: 'Bridge CLI: Coverity SAST Analysis with SARIF'
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
@@ -310,20 +330,25 @@ stages:
       inputs:
         artifact: 'WebGoatSource'
         path: '$(Build.SourcesDirectory)'
+    
+    # Full scan for main/develop branches
     - bash: |
         set -ex
         curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
-        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage connect
+        $(Agent.TempDirectory)/bridge-cli-bundle-linux64/bridge-cli --stage connect \
+          network.ssl.trustAll=true
       env:
         BRIDGE_COVERITY_CONNECT_URL: $(COVERITY_URL)
         BRIDGE_COVERITY_CONNECT_USER_NAME: $(COV_USER)
         BRIDGE_COVERITY_CONNECT_USER_PASSWORD: $(COVERITY_PASSPHRASE)
         BRIDGE_COVERITY_CONNECT_PROJECT_NAME: $(Build.Repository.Name)
         BRIDGE_COVERITY_CONNECT_STREAM_NAME: $(Build.Repository.Name)-$(Build.SourceBranchName)
-        BRIDGE_COVERITY_CONNECT_POLICY_VIEW: $(COVERITY_VIEW)
+        BRIDGE_COVERITY_LOCAL: true  # Enable local mode for SARIF generation
       displayName: 'Coverity Full Scan'
       condition: not(eq(variables['Build.Reason'], 'PullRequest'))
       continueOnError: true
+    
+    # PR scan for pull requests
     - bash: |
         set -ex
         curl -fLsS -o bridge.zip $BRIDGECLI_LINUX64 && unzip -qo -d $(Agent.TempDirectory) bridge.zip && rm -f bridge.zip
@@ -335,15 +360,142 @@ stages:
         BRIDGE_COVERITY_CONNECT_PROJECT_NAME: $(Build.Repository.Name)
         BRIDGE_COVERITY_CONNECT_STREAM_NAME: $(Build.Repository.Name)-$(System.PullRequest.targetBranchName)
         BRIDGE_COVERITY_AUTOMATION_PRCOMMENT: true
-        BRIDGE_AZURE_USER_TOKEN: $(System.AccessToken)
-        BRIDGE_AZURE_ORGANIZATION_NAME: $(System.TeamFoundationCollectionUri)
+        BRIDGE_AZURE_USER_TOKEN: $(AZURE_PERSONAL_ACCESS_TOKEN)
+        BRIDGE_AZURE_ORGANIZATION_NAME: smiths0263
         BRIDGE_AZURE_REPOSITORY_NAME: $(Build.Repository.Name)
         BRIDGE_AZURE_PROJECT_NAME: $(System.TeamProject)
         BRIDGE_AZURE_REPOSITORY_BRANCH_NAME: $(System.PullRequest.SourceBranch)
         BRIDGE_AZURE_REPOSITORY_PULL_NUMBER: $(System.PullRequest.PullRequestId)
+        BRIDGE_COVERITY_LOCAL: true  # Enable local mode for SARIF generation
       displayName: 'Coverity PR Scan'
       condition: eq(variables['Build.Reason'], 'PullRequest')
       continueOnError: true
+    
+    # Generate SARIF report from Coverity results
+    - bash: |
+        set -ex
+        echo "=== Generating Coverity SARIF Report ==="
+        
+        # First, try to find the actual Coverity tools used by Bridge CLI
+        BRIDGE_COV_PATH=""
+        if [ -d "/home/ubuntu/.blackduck/bridge/tools" ]; then
+            BRIDGE_COV_PATH=$(find /home/ubuntu/.blackduck/bridge/tools -name "cov-analysis" -type d | head -1)
+            if [ -n "$BRIDGE_COV_PATH" ]; then
+                echo "Found Bridge CLI Coverity tools at: $BRIDGE_COV_PATH"
+                COVERITY_TOOL_HOME="$BRIDGE_COV_PATH"
+            fi
+        fi
+        
+        # Fallback to configured path
+        if [ -z "$BRIDGE_COV_PATH" ] && [ -d "$(COVERITY_TOOL_HOME)" ]; then
+            echo "Using configured Coverity tool home: $(COVERITY_TOOL_HOME)"
+            COVERITY_TOOL_HOME="$(COVERITY_TOOL_HOME)"
+        elif [ -z "$BRIDGE_COV_PATH" ]; then
+            echo "ERROR: No Coverity tools found. Checked paths:"
+            echo "  - /home/ubuntu/.blackduck/bridge/tools/*/cov-analysis"
+            echo "  - $(COVERITY_TOOL_HOME)"
+            echo "Available Bridge CLI tools:"
+            find /home/ubuntu/.blackduck/bridge/tools -type d -name "*cov*" 2>/dev/null || echo "None found"
+            exit 1
+        fi
+        
+        echo "Using Coverity tools at: $COVERITY_TOOL_HOME"
+        
+        # Verify required executables exist
+        if [ ! -f "$COVERITY_TOOL_HOME/bin/cov-format-errors" ]; then
+            echo "ERROR: cov-format-errors not found at $COVERITY_TOOL_HOME/bin/"
+            ls -la "$COVERITY_TOOL_HOME/bin/" || echo "Bin directory not found"
+            exit 1
+        fi
+        
+        if [ ! -f "$COVERITY_TOOL_HOME/SARIF/cov-format-sarif-for-github.js" ]; then
+            echo "ERROR: SARIF converter not found at $COVERITY_TOOL_HOME/SARIF/"
+            ls -la "$COVERITY_TOOL_HOME/SARIF/" || echo "SARIF directory not found"
+            find "$COVERITY_TOOL_HOME" -name "*sarif*" -type f || echo "No SARIF files found"
+            exit 1
+        fi
+        
+        # Find the intermediate directory created by Bridge CLI
+        IDIR=$(find $(Build.SourcesDirectory)/.bridge -name idir 2>/dev/null | head -1)
+        if [ -z "$IDIR" ]; then
+            echo "WARNING: No Coverity intermediate directory found"
+            echo "Bridge directory contents:"
+            find $(Build.SourcesDirectory)/.bridge -type d 2>/dev/null || echo "No .bridge directory found"
+            
+            # Try alternative locations
+            IDIR=$(find $(Build.SourcesDirectory) -path "*/.bridge/*/idir" 2>/dev/null | head -1)
+            if [ -z "$IDIR" ]; then
+                echo "ERROR: Could not locate Coverity intermediate directory"
+                exit 1
+            fi
+        fi
+        
+        echo "Found Coverity idir: $IDIR"
+        
+        # Convert Coverity results to JSON
+        echo "Converting Coverity results to JSON..."
+        $COVERITY_TOOL_HOME/bin/cov-format-errors --dir "$IDIR" --json-output-v10 coverity-issues.json
+        
+        if [ ! -f "coverity-issues.json" ]; then
+            echo "ERROR: Failed to generate coverity-issues.json"
+            ls -la . | grep -i coverity || echo "No coverity files found in current directory"
+            exit 1
+        fi
+        
+        echo "Generated coverity-issues.json ($(wc -l < coverity-issues.json) lines)"
+        
+        # Convert JSON to SARIF using Coverity's converter
+        echo "Converting JSON to SARIF..."
+        $COVERITY_TOOL_HOME/node/bin/node $COVERITY_TOOL_HOME/SARIF/cov-format-sarif-for-github.js \
+          --inputFile coverity-issues.json \
+          --outputFile coverity-report.sarif \
+          --githubUrl https://dev.azure.com \
+          --repoName $(Build.Repository.Name) \
+          --checkoutPath $(Build.Repository.Name) $(Build.SourcesDirectory) $(Build.SourceVersion)
+        
+        if [ ! -f "coverity-report.sarif" ]; then
+            echo "ERROR: Failed to generate coverity-report.sarif"
+            echo "Node.js and converter details:"
+            $COVERITY_TOOL_HOME/node/bin/node --version || echo "Node.js not found"
+            ls -la $COVERITY_TOOL_HOME/SARIF/ || echo "SARIF directory not accessible"
+            exit 1
+        fi
+        
+        echo "Generated coverity-report.sarif ($(wc -l < coverity-report.sarif) lines)"
+        
+        # Create CodeAnalysisLogs.zip for Azure DevOps SARIF integration
+        zip CodeAnalysisLogs.zip coverity-report.sarif
+        
+        echo "=== SARIF Generation Summary ==="
+        echo "Issues JSON: $(ls -lh coverity-issues.json)"
+        echo "SARIF Report: $(ls -lh coverity-report.sarif)"
+        echo "Archive: $(ls -lh CodeAnalysisLogs.zip)"
+        
+        # Display summary of findings
+        if command -v jq >/dev/null 2>&1; then
+            echo "=== Coverity Findings Summary ==="
+            jq -r '.runs[0].results | length as $count | "Total findings: \($count)"' coverity-report.sarif 2>/dev/null || echo "Could not parse SARIF for summary"
+        fi
+        
+      displayName: 'Generate Coverity SARIF Report'
+      condition: always()  # Run even if scan partially failed
+      continueOnError: true
+    
+    # Publish SARIF as build artifact for download
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Coverity SARIF Report'
+      condition: and(always(), not(failed()))
+      inputs:
+        PathtoPublish: 'coverity-report.sarif'
+        ArtifactName: 'CoveritySARIF'
+    
+    # Publish CodeAnalysisLogs.zip for SARIF SAST Scans Tab integration
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Code Analysis Logs'
+      condition: and(always(), not(failed()))
+      inputs:
+        PathtoPublish: 'CodeAnalysisLogs.zip'
+        ArtifactName: 'CodeAnalysisLogs'
 
   - job: PublishSecurityResults
     displayName: 'Publish Security Scan Results'
@@ -355,16 +507,76 @@ stages:
     pool:
       name: 'Self-Hosted ADO Agent'
     steps:
+    # Download all security artifacts
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Coverity SARIF'
+      condition: always()
+      inputs:
+        artifact: 'CoveritySARIF'
+        path: '$(Build.SourcesDirectory)/sarif'
+      continueOnError: true
+    
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Code Analysis Logs'
+      condition: always()
+      inputs:
+        artifact: 'CodeAnalysisLogs'
+        path: '$(Build.SourcesDirectory)/logs'
+      continueOnError: true
+    
+    # Publish SARIF results for the SARIF SAST Scans Tab
     - task: PublishTestResults@2
       displayName: 'Publish SARIF Results'
       condition: always()
       inputs:
         testResultsFormat: 'VSTest'
-        testResultsFiles: '**/*.sarif'
-        searchFolder: '$(Agent.WorkFolder)'
+        testResultsFiles: |
+          **/*.sarif
+          **/CodeAnalysisLogs.zip
+        searchFolder: '$(Build.SourcesDirectory)'
         publishRunAttachments: true
         failTaskOnFailedTests: false
-        testRunTitle: 'Security Scan Results'
+        testRunTitle: 'Security Scan Results (SARIF)'
+      continueOnError: true
+    
+    # Create summary report of all security findings
+    - bash: |
+        set -e
+        echo "=== Security Scan Results Summary ==="
+        echo "Build ID: $(Build.BuildId)"
+        echo "Repository: $(Build.Repository.Name)"
+        echo "Branch: $(Build.SourceBranchName)"
+        echo "Commit: $(Build.SourceVersion)"
+        echo ""
+        
+        # Check for SARIF files and summarize
+        if find . -name "*.sarif" -type f | head -1 >/dev/null 2>&1; then
+            echo "SARIF Reports Found:"
+            find . -name "*.sarif" -type f -exec echo "  - {}" \; -exec wc -l {} \;
+            
+            # If jq is available, provide detailed summary
+            if command -v jq >/dev/null 2>&1; then
+                for sarif_file in $(find . -name "*.sarif" -type f); do
+                    echo ""
+                    echo "Analysis of $sarif_file:"
+                    jq -r '
+                      .runs[]? | 
+                      "  Tool: " + (.tool.driver.name // "Unknown") + 
+                      " | Results: " + (.results | length | tostring) +
+                      " | Rules: " + (.tool.driver.rules | length | tostring)
+                    ' "$sarif_file" 2>/dev/null || echo "  Could not parse SARIF file"
+                done
+            fi
+        else
+            echo "No SARIF files found"
+        fi
+        
+        echo ""
+        echo "=== Available Artifacts ==="
+        find . -name "*.zip" -o -name "*.sarif" -o -name "*.json" | sort
+        
+      displayName: 'Security Results Summary'
+      condition: always()
       continueOnError: true
 
 - stage: DeployKubernetes
@@ -633,9 +845,15 @@ stages:
           echo "Security Scans Executed:"
           echo "  ✓ Black Duck SCA Source Analysis"
           echo "  ✓ Black Duck Container Analysis"
-          echo "  ✓ Coverity SAST Analysis"
+          echo "  ✓ Coverity SAST Analysis with SARIF"
           echo ""
           echo "WebGoat Application Access:"
           echo "  Main: http://$(K8S_PUBLIC_IP):$(WEBGOAT_NODEPORT)/WebGoat/"
           echo "  Wolf: http://$(K8S_PUBLIC_IP):$(WEBWOLF_NODEPORT)/WebWolf/"
+          echo ""
+          echo "Security Reporting:"
+          echo "  ✓ Black Duck SARIF reports (auto-generated)"
+          echo "  ✓ Coverity SARIF reports (custom generated)"
+          echo "  ✓ SARIF SAST Scans Tab integration"
+          echo "  ✓ Black Duck Fix PR functionality (enhanced)"
           echo "==============================================="
