@@ -5,19 +5,19 @@
 ### Windows
 ```powershell
 # Download and install
-.\Install-BridgeCLI-Windows.ps1
+.\Windows\Install-BridgeCLI-Windows.ps1
 
 # With custom path
-.\Install-BridgeCLI-Windows.ps1 -InstallDirectory "C:\tools\bridge"
+.\Windows\Install-BridgeCLI-Windows.ps1 -InstallDirectory "C:\tools\bridge"
 ```
 
 ### Linux (PowerShell Core)
 ```bash
 # Download and install
-pwsh ./Install-BridgeCLI-Linux.ps1
+pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 
 # With custom path
-pwsh ./Install-BridgeCLI-Linux.ps1 -InstallDirectory "/opt/bridge"
+pwsh ./Linux/Install-BridgeCLI-Linux.ps1 -InstallDirectory "/opt/bridge"
 ```
 
 ---
@@ -28,7 +28,7 @@ pwsh ./Install-BridgeCLI-Linux.ps1 -InstallDirectory "/opt/bridge"
 
 **Windows:**
 ```powershell
-.\Run-BlackDuckSCA-Windows.ps1 `
+.\Windows\Run-BlackDuckSCA-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "YOUR_TOKEN" `
     -ProjectName "MyApp" `
@@ -37,7 +37,7 @@ pwsh ./Install-BridgeCLI-Linux.ps1 -InstallDirectory "/opt/bridge"
 
 **Linux:**
 ```bash
-pwsh ./Run-BlackDuckSCA-Linux.ps1 `
+pwsh ./Linux/Run-BlackDuckSCA-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "YOUR_TOKEN" `
     -ProjectName "MyApp" `
@@ -48,7 +48,7 @@ pwsh ./Run-BlackDuckSCA-Linux.ps1 `
 
 **Windows:**
 ```powershell
-.\Run-Coverity-Windows.ps1 `
+.\Windows\Run-Coverity-Windows.ps1 `
     -CoverityUrl "https://coverity.example.com" `
     -CoverityUser "username" `
     -CoverityPassword "password" `
@@ -58,7 +58,7 @@ pwsh ./Run-BlackDuckSCA-Linux.ps1 `
 
 **Linux:**
 ```bash
-pwsh ./Run-Coverity-Linux.ps1 `
+pwsh ./Linux/Run-Coverity-Linux.ps1 `
     -CoverityUrl "https://coverity.example.com" `
     -CoverityUser "username" `
     -CoverityPassword "password" `
@@ -70,7 +70,7 @@ pwsh ./Run-Coverity-Linux.ps1 `
 
 **Windows:**
 ```powershell
-.\Run-Combined-SCA-Coverity-Windows.ps1 `
+.\Windows\Run-Combined-SCA-Coverity-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "YOUR_TOKEN" `
     -CoverityUrl "https://coverity.example.com" `
@@ -83,7 +83,7 @@ pwsh ./Run-Coverity-Linux.ps1 `
 
 **Linux:**
 ```bash
-pwsh ./Run-Combined-SCA-Coverity-Linux.ps1 `
+pwsh ./Linux/Run-Combined-SCA-Coverity-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "YOUR_TOKEN" `
     -CoverityUrl "https://coverity.example.com" `
@@ -247,10 +247,10 @@ Get-ChildItem Env: | Where-Object { $_.Name -like "BRIDGE_*" }
 **Windows:**
 ```powershell
 # 1. Install Bridge CLI
-.\Install-BridgeCLI-Windows.ps1
+.\Windows\Install-BridgeCLI-Windows.ps1
 
 # 2. Run a test scan
-.\Run-BlackDuckSCA-Windows.ps1 `
+.\Windows\Run-BlackDuckSCA-Windows.ps1 `
     -BlackDuckUrl "https://your-bd-server.com" `
     -BlackDuckToken "YOUR_TOKEN" `
     -ProjectName "TestProject" `
@@ -260,10 +260,10 @@ Get-ChildItem Env: | Where-Object { $_.Name -like "BRIDGE_*" }
 **Linux:**
 ```bash
 # 1. Install Bridge CLI
-pwsh ./Install-BridgeCLI-Linux.ps1
+pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 
 # 2. Run a test scan
-pwsh ./Run-BlackDuckSCA-Linux.ps1 `
+pwsh ./Linux/Run-BlackDuckSCA-Linux.ps1 `
     -BlackDuckUrl "https://your-bd-server.com" `
     -BlackDuckToken "YOUR_TOKEN" `
     -ProjectName "TestProject" `
@@ -380,7 +380,7 @@ variables:
 
 ### Script Help
 ```powershell
-Get-Help .\Run-BlackDuckSCA-Windows.ps1 -Full
+Get-Help .\Windows\Run-BlackDuckSCA-Windows.ps1 -Full
 ```
 
 ### Bridge CLI Help
