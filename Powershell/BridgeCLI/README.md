@@ -75,8 +75,8 @@ This repository contains PowerShell scripts and examples for integrating Black D
 Clone this repository or download the PowerShell scripts:
 
 ```bash
-git clone https://your-repo-url.git
-cd bridge-cli-scripts
+git clone https://github.com/snps-steve/DevSecOps/tree/main/Powershell/BridgeCLI
+cd BridgeCLI
 ```
 
 ### Step 2: Install Bridge CLI
