@@ -4,14 +4,14 @@ This repository contains PowerShell scripts and examples for integrating Black D
 
 ## 📋 Table of Contents
 
-- [Overview](#overview)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [PowerShell Scripts](#powershell-scripts)
-- [Azure DevOps Pipeline Examples](#azure-devops-pipeline-examples)
-- [Configuration Guide](#configuration-guide)
-- [Official Documentation](#official-documentation)
-- [Troubleshooting](#troubleshooting)
+- [Overview](#-overview)
+- [Prerequisites](#-prerequisites)
+- [Quick Start](#-quick-start)
+- [PowerShell Scripts](#-powershell-scripts)
+- [Azure DevOps Pipeline Examples](#-azure-devops-pipeline-examples)
+- [Configuration Guide](#-configuration-guide)
+- [Official Documentation](#-official-documentation)
+- [Troubleshooting](#-troubleshooting)
 
 ---
 
@@ -575,4 +575,4 @@ For questions, feedback, or contributions related to this training material, ple
 
 **Last Updated:** September 2025  
 **Version:** 1.0  
-**Maintained By:** Black Duck Professional Services
+**Maintained By:** Steve R. Smith, TAM and NAM TAM Team Lead
