@@ -25,6 +25,8 @@ pwsh ./Install-BridgeCLI-Linux.ps1 -InstallDirectory "/opt/bridge"
 ## 🔍 Basic Scan Commands
 
 ### Black Duck SCA Scan
+
+**Windows:**
 ```powershell
 .\Run-BlackDuckSCA-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
@@ -33,7 +35,18 @@ pwsh ./Install-BridgeCLI-Linux.ps1 -InstallDirectory "/opt/bridge"
     -ProjectVersion "main"
 ```
 
+**Linux:**
+```bash
+pwsh ./Run-BlackDuckSCA-Linux.ps1 `
+    -BlackDuckUrl "https://blackduck.example.com" `
+    -BlackDuckToken "YOUR_TOKEN" `
+    -ProjectName "MyApp" `
+    -ProjectVersion "main"
+```
+
 ### Coverity Scan
+
+**Windows:**
 ```powershell
 .\Run-Coverity-Windows.ps1 `
     -CoverityUrl "https://coverity.example.com" `
@@ -43,9 +56,34 @@ pwsh ./Install-BridgeCLI-Linux.ps1 -InstallDirectory "/opt/bridge"
     -StreamName "MyApp-main"
 ```
 
+**Linux:**
+```bash
+pwsh ./Run-Coverity-Linux.ps1 `
+    -CoverityUrl "https://coverity.example.com" `
+    -CoverityUser "username" `
+    -CoverityPassword "password" `
+    -ProjectName "MyApp" `
+    -StreamName "MyApp-main"
+```
+
 ### Combined SCA + Coverity
+
+**Windows:**
 ```powershell
 .\Run-Combined-SCA-Coverity-Windows.ps1 `
+    -BlackDuckUrl "https://blackduck.example.com" `
+    -BlackDuckToken "YOUR_TOKEN" `
+    -CoverityUrl "https://coverity.example.com" `
+    -CoverityUser "username" `
+    -CoverityPassword "password" `
+    -ProjectName "MyApp" `
+    -ProjectVersion "main" `
+    -StreamName "MyApp-main"
+```
+
+**Linux:**
+```bash
+pwsh ./Run-Combined-SCA-Coverity-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "YOUR_TOKEN" `
     -CoverityUrl "https://coverity.example.com" `
@@ -205,12 +243,27 @@ Get-ChildItem Env: | Where-Object { $_.Name -like "BRIDGE_*" }
 ## ⚡ Common Scenarios
 
 ### Scenario 1: First Time Setup
+
+**Windows:**
 ```powershell
 # 1. Install Bridge CLI
 .\Install-BridgeCLI-Windows.ps1
 
 # 2. Run a test scan
 .\Run-BlackDuckSCA-Windows.ps1 `
+    -BlackDuckUrl "https://your-bd-server.com" `
+    -BlackDuckToken "YOUR_TOKEN" `
+    -ProjectName "TestProject" `
+    -ProjectVersion "test"
+```
+
+**Linux:**
+```bash
+# 1. Install Bridge CLI
+pwsh ./Install-BridgeCLI-Linux.ps1
+
+# 2. Run a test scan
+pwsh ./Run-BlackDuckSCA-Linux.ps1 `
     -BlackDuckUrl "https://your-bd-server.com" `
     -BlackDuckToken "YOUR_TOKEN" `
     -ProjectName "TestProject" `
@@ -353,4 +406,4 @@ For technical questions about this training:
 
 **Quick Reference Version:** 1.0  
 **Last Updated:** September 2025  
-**Maintained By:** Black Duck Professional Services
+**Maintained By:** Steve R. Smith, TAM and NAM TAM Team Lead
