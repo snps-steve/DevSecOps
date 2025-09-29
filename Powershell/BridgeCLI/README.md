@@ -91,7 +91,7 @@ cd BridgeCLI
 pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 ```
 
-### Step 3: Run a Security Scan
+### Step 3: Run a Security Scan (Windows)
 
 #### Black Duck SCA Scan
 ```powershell
@@ -104,7 +104,7 @@ pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 
 #### Coverity Scan
 ```powershell
-.\Run-Coverity-Windows.ps1 `
+.\Windows\Run-Coverity-Windows.ps1 `
     -CoverityUrl "https://coverity.example.com" `
     -CoverityUser "admin" `
     -CoverityPassword "password" `
@@ -114,7 +114,7 @@ pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 
 #### Combined SCA + Coverity Scan
 ```powershell
-.\Run-Combined-SCA-Coverity-Windows.ps1 `
+.\Windows\Run-Combined-SCA-Coverity-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-api-token" `
     -CoverityUrl "https://coverity.example.com" `
@@ -124,7 +124,39 @@ pwsh ./Linux/Install-BridgeCLI-Linux.ps1
     -ProjectVersion "main" `
     -StreamName "MyApplication-main"
 ```
+### Step 3: Run a Security Scan (Linux)
 
+#### Black Duck SCA Scan
+```powershell
+.\Linux\Run-BlackDuckSCA-Linux.ps1 `
+    -BlackDuckUrl "https://blackduck.example.com" `
+    -BlackDuckToken "your-api-token" `
+    -ProjectName "MyApplication" `
+    -ProjectVersion "main"
+```
+
+#### Coverity Scan
+```powershell
+.\Linux\Run-Coverity-Linux.ps1 `
+    -CoverityUrl "https://coverity.example.com" `
+    -CoverityUser "admin" `
+    -CoverityPassword "password" `
+    -ProjectName "MyApplication" `
+    -StreamName "MyApplication-main"
+```
+
+#### Combined SCA + Coverity Scan
+```powershell
+.\Linux\Run-Combined-SCA-Coverity-Linux.ps1 `
+    -BlackDuckUrl "https://blackduck.example.com" `
+    -BlackDuckToken "your-api-token" `
+    -CoverityUrl "https://coverity.example.com" `
+    -CoverityUser "admin" `
+    -CoverityPassword "password" `
+    -ProjectName "MyApplication" `
+    -ProjectVersion "main" `
+    -StreamName "MyApplication-main"
+```
 ---
 
 ## 📜 PowerShell Scripts
