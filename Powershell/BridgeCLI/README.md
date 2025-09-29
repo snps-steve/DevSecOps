@@ -64,7 +64,7 @@ This guide covers:
 - **Choose Bridge CLI Direct** if you need combined SCA + Coverity scans, advanced customization, or want version-controlled configuration
 - **Use Both (Hybrid)** for different scenarios: Task for simple PR scans, Bridge CLI for advanced production scans
 
-## Quick Start Reference Card
+## 📚 Quick Start Reference Card
 
 If you don't need as much documentation and you want a quick path to Bridge CLI installation and scanning via Powershell, you can use this Quick Start Guide.
 
