@@ -79,12 +79,14 @@ git clone https://github.com/snps-steve/DevSecOps/tree/main/Powershell/BridgeCLI
 cd BridgeCLI
 ```
 
-### Step 2: Install Bridge CLI
+### Step 2: Install Bridge CLI (Windows)
 
 #### Windows
 ```powershell
 .\Windows\Install-BridgeCLI-Windows.ps1
 ```
+
+### Step 2: Install Bridge CLI (Linux)
 
 #### Linux (PowerShell Core)
 ```bash
