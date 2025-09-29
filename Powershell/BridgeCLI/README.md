@@ -75,29 +75,38 @@ This repository contains PowerShell scripts and examples for integrating Black D
 Clone this repository or download the PowerShell scripts:
 
 ```bash
-git clone https://github.com/snps-steve/DevSecOps/tree/main/Powershell/BridgeCLI
-cd BridgeCLI
+git clone https://your-repo-url.git
+cd bridge-cli-scripts
 ```
 
-### Step 2: Install Bridge CLI (Windows)
+### Step 2: Install Bridge CLI
 
-#### Windows
+**On Windows:**
 ```powershell
-.\Windows\Install-BridgeCLI-Windows.ps1
+.\Install-BridgeCLI-Windows.ps1
 ```
 
-### Step 2: Install Bridge CLI (Linux)
-
-#### Linux (PowerShell Core)
+**On Linux (PowerShell Core):**
 ```bash
-pwsh ./Linux/Install-BridgeCLI-Linux.ps1
+pwsh ./Install-BridgeCLI-Linux.ps1
 ```
 
-### Step 3: Run a Security Scan (Windows)
+### Step 3: Run a Security Scan
 
 #### Black Duck SCA Scan
+
+**Windows:**
 ```powershell
-.\Windows\Run-BlackDuckSCA-Windows.ps1 `
+.\Run-BlackDuckSCA-Windows.ps1 `
+    -BlackDuckUrl "https://blackduck.example.com" `
+    -BlackDuckToken "your-api-token" `
+    -ProjectName "MyApplication" `
+    -ProjectVersion "main"
+```
+
+**Linux:**
+```bash
+pwsh ./Run-BlackDuckSCA-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-api-token" `
     -ProjectName "MyApplication" `
@@ -105,8 +114,20 @@ pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 ```
 
 #### Coverity Scan
+
+**Windows:**
 ```powershell
-.\Windows\Run-Coverity-Windows.ps1 `
+.\Run-Coverity-Windows.ps1 `
+    -CoverityUrl "https://coverity.example.com" `
+    -CoverityUser "admin" `
+    -CoverityPassword "password" `
+    -ProjectName "MyApplication" `
+    -StreamName "MyApplication-main"
+```
+
+**Linux:**
+```bash
+pwsh ./Run-Coverity-Linux.ps1 `
     -CoverityUrl "https://coverity.example.com" `
     -CoverityUser "admin" `
     -CoverityPassword "password" `
@@ -115,8 +136,10 @@ pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 ```
 
 #### Combined SCA + Coverity Scan
+
+**Windows:**
 ```powershell
-.\Windows\Run-Combined-SCA-Coverity-Windows.ps1 `
+.\Run-Combined-SCA-Coverity-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-api-token" `
     -CoverityUrl "https://coverity.example.com" `
@@ -126,30 +149,10 @@ pwsh ./Linux/Install-BridgeCLI-Linux.ps1
     -ProjectVersion "main" `
     -StreamName "MyApplication-main"
 ```
-### Step 3: Run a Security Scan (Linux)
 
-#### Black Duck SCA Scan
-```powershell
-.\Linux\Run-BlackDuckSCA-Linux.ps1 `
-    -BlackDuckUrl "https://blackduck.example.com" `
-    -BlackDuckToken "your-api-token" `
-    -ProjectName "MyApplication" `
-    -ProjectVersion "main"
-```
-
-#### Coverity Scan
-```powershell
-.\Linux\Run-Coverity-Linux.ps1 `
-    -CoverityUrl "https://coverity.example.com" `
-    -CoverityUser "admin" `
-    -CoverityPassword "password" `
-    -ProjectName "MyApplication" `
-    -StreamName "MyApplication-main"
-```
-
-#### Combined SCA + Coverity Scan
-```powershell
-.\Linux\Run-Combined-SCA-Coverity-Linux.ps1 `
+**Linux:**
+```bash
+pwsh ./Run-Combined-SCA-Coverity-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-api-token" `
     -CoverityUrl "https://coverity.example.com" `
@@ -159,9 +162,12 @@ pwsh ./Linux/Install-BridgeCLI-Linux.ps1
     -ProjectVersion "main" `
     -StreamName "MyApplication-main"
 ```
+
 ---
 
 ## 📜 PowerShell Scripts
+
+This repository includes PowerShell scripts for both **Windows** and **Linux** platforms. All scanning functionality is available on both platforms through PowerShell Core.
 
 ### Installation Scripts
 
@@ -193,9 +199,9 @@ pwsh ./Install-BridgeCLI-Linux.ps1 -InstallDirectory "/tmp/bridge" -BridgeVersio
 
 ### Scan Scripts
 
-#### Run-BlackDuckSCA-Windows.ps1
+#### Run-BlackDuckSCA-Windows.ps1 / Run-BlackDuckSCA-Linux.ps1
 
-Executes Black Duck SCA scan using Bridge CLI.
+Executes Black Duck SCA scan using Bridge CLI on Windows or Linux.
 
 **Parameters:**
 - `BridgeCliPath`: Path to Bridge CLI executable
@@ -206,7 +212,7 @@ Executes Black Duck SCA scan using Bridge CLI.
 - `ScanMode`: `full` or `pr` (default: `full`)
 - `TrustAllCertificates`: Skip SSL verification (switch)
 
-**Example:**
+**Example (Windows):**
 ```powershell
 .\Run-BlackDuckSCA-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
@@ -216,9 +222,19 @@ Executes Black Duck SCA scan using Bridge CLI.
     -ScanMode "full"
 ```
 
-#### Run-Coverity-Windows.ps1
+**Example (Linux):**
+```bash
+pwsh ./Run-BlackDuckSCA-Linux.ps1 `
+    -BlackDuckUrl "https://blackduck.example.com" `
+    -BlackDuckToken "your-token" `
+    -ProjectName "WebGoat" `
+    -ProjectVersion "main" `
+    -ScanMode "full"
+```
 
-Executes Coverity scan using Bridge CLI.
+#### Run-Coverity-Windows.ps1 / Run-Coverity-Linux.ps1
+
+Executes Coverity scan using Bridge CLI on Windows or Linux.
 
 **Parameters:**
 - `BridgeCliPath`: Path to Bridge CLI executable
@@ -231,7 +247,7 @@ Executes Coverity scan using Bridge CLI.
 - `LocalScan`: Use local scan mode (switch)
 - `TrustAllCertificates`: Skip SSL verification (switch)
 
-**Example:**
+**Example (Windows):**
 ```powershell
 .\Run-Coverity-Windows.ps1 `
     -CoverityUrl "https://coverity.example.com" `
@@ -242,15 +258,39 @@ Executes Coverity scan using Bridge CLI.
     -LocalScan
 ```
 
-#### Run-Combined-SCA-Coverity-Windows.ps1
+**Example (Linux):**
+```bash
+pwsh ./Run-Coverity-Linux.ps1 `
+    -CoverityUrl "https://coverity.example.com" `
+    -CoverityUser "admin" `
+    -CoverityPassword "password" `
+    -ProjectName "WebGoat" `
+    -StreamName "WebGoat-main" `
+    -LocalScan
+```
 
-Executes both Black Duck SCA and Coverity scans in a single Bridge CLI invocation.
+#### Run-Combined-SCA-Coverity-Windows.ps1 / Run-Combined-SCA-Coverity-Linux.ps1
+
+Executes both Black Duck SCA and Coverity scans in a single Bridge CLI invocation on Windows or Linux.
 
 **Parameters:** Combined parameters from both SCA and Coverity scripts
 
-**Example:**
+**Example (Windows):**
 ```powershell
 .\Run-Combined-SCA-Coverity-Windows.ps1 `
+    -BlackDuckUrl "https://blackduck.example.com" `
+    -BlackDuckToken "your-token" `
+    -CoverityUrl "https://coverity.example.com" `
+    -CoverityUser "admin" `
+    -CoverityPassword "password" `
+    -ProjectName "WebGoat" `
+    -ProjectVersion "main" `
+    -StreamName "WebGoat-main"
+```
+
+**Example (Linux):**
+```bash
+pwsh ./Run-Combined-SCA-Coverity-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-token" `
     -CoverityUrl "https://coverity.example.com" `
@@ -265,7 +305,7 @@ Executes both Black Duck SCA and Coverity scans in a single Bridge CLI invocatio
 
 ## 🔧 Azure DevOps Pipeline Examples
 
-### Example 1: Black Duck SCA Scan (YAML)
+### Example 1: Black Duck SCA Scan (Windows Agent)
 
 ```yaml
 trigger:
@@ -299,7 +339,43 @@ steps:
     continueOnError: true
 ```
 
-### Example 2: Coverity Scan with PR Comments (YAML)
+### Example 2: Black Duck SCA Scan (Linux Agent)
+
+```yaml
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: BlackDuck-Credentials
+
+steps:
+  - task: PowerShell@2
+    displayName: 'Install Bridge CLI'
+    inputs:
+      filePath: '$(System.DefaultWorkingDirectory)/scripts/Install-BridgeCLI-Linux.ps1'
+      pwsh: true
+      
+  - task: PowerShell@2
+    displayName: 'Black Duck SCA Scan'
+    inputs:
+      filePath: '$(System.DefaultWorkingDirectory)/scripts/Run-BlackDuckSCA-Linux.ps1'
+      arguments: >
+        -BlackDuckUrl "$(BLACKDUCK_URL)"
+        -BlackDuckToken "$(BLACKDUCK_TOKEN)"
+        -ProjectName "$(Build.Repository.Name)"
+        -ProjectVersion "$(Build.SourceBranchName)"
+        -ScanMode "full"
+      pwsh: true
+    continueOnError: true
+```
+
+### Example 3: Coverity Scan with PR Comments (Linux Agent)
 
 ```yaml
 trigger:
@@ -329,7 +405,7 @@ steps:
     displayName: 'Coverity Scan'
     condition: eq(variables['Build.Reason'], 'PullRequest')
     inputs:
-      filePath: '$(System.DefaultWorkingDirectory)/scripts/Run-Coverity-Windows.ps1'
+      filePath: '$(System.DefaultWorkingDirectory)/scripts/Run-Coverity-Linux.ps1'
       arguments: >
         -CoverityUrl "$(COVERITY_URL)"
         -CoverityUser "$(COVERITY_USER)"
@@ -344,7 +420,7 @@ steps:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 ```
 
-### Example 3: Combined SCA + Coverity Scan
+### Example 4: Combined SCA + Coverity Scan (Self-Hosted Linux Agent)
 
 ```yaml
 trigger:
@@ -378,7 +454,7 @@ steps:
   - task: PowerShell@2
     displayName: 'Security Scan (SCA + Coverity)'
     inputs:
-      filePath: '$(System.DefaultWorkingDirectory)/scripts/Run-Combined-SCA-Coverity-Windows.ps1'
+      filePath: '$(System.DefaultWorkingDirectory)/scripts/Run-Combined-SCA-Coverity-Linux.ps1'
       arguments: >
         -BlackDuckUrl "$(BLACKDUCK_URL)"
         -BlackDuckToken "$(BLACKDUCK_TOKEN)"
