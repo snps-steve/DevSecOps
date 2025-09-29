@@ -7,7 +7,7 @@ This repository contains PowerShell scripts and examples for integrating Black D
 - [Overview](#-overview)
 - [Integration Options Comparison](#-integration-options-comparison)
 - [Prerequisites](#-prerequisites)
-- [Quick Start](#-quick-start)
+- [Start](#-start)
 - [PowerShell Scripts](#-powershell-scripts)
 - [Azure DevOps Pipeline Examples](#-azure-devops-pipeline-examples)
 - [Configuration Guide](#-configuration-guide)
@@ -100,7 +100,7 @@ If you don't need as much documentation and you want a quick path to Bridge CLI 
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Start
 
 ### Step 1: Download Scripts
 
