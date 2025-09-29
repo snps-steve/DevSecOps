@@ -305,7 +305,7 @@ pwsh ./Linux/Run-Combined-SCA-Coverity-Linux.ps1 `
 
 ## 🔧 Azure DevOps Pipeline Examples
 
-### Example 1: Black Duck SCA Scan (Windows Agent)
+### Example 1: Black Duck SCA Scan (Windows Agent) - copy the Windows scripts to '$(System.DefaultWorkingDirectory)/scripts/'
 
 ```yaml
 trigger:
@@ -339,7 +339,7 @@ steps:
     continueOnError: true
 ```
 
-### Example 2: Black Duck SCA Scan (Linux Agent)
+### Example 2: Black Duck SCA Scan (Linux Agent) - copy the Windows scripts to '$(System.DefaultWorkingDirectory)/scripts/'
 
 ```yaml
 trigger:
@@ -375,7 +375,7 @@ steps:
     continueOnError: true
 ```
 
-### Example 3: Coverity Scan with PR Comments (Linux Agent)
+### Example 3: Coverity Scan with PR Comments (Linux Agent) - copy the Windows scripts to '$(System.DefaultWorkingDirectory)/scripts/'
 
 ```yaml
 trigger:
@@ -420,7 +420,7 @@ steps:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 ```
 
-### Example 4: Combined SCA + Coverity Scan (Self-Hosted Linux Agent)
+### Example 4: Combined SCA + Coverity Scan (Self-Hosted Linux Agent) - copy the Windows scripts to '$(System.DefaultWorkingDirectory)/scripts/'
 
 ```yaml
 trigger:
