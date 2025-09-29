@@ -83,19 +83,19 @@ cd bridge-cli-scripts
 
 #### Windows
 ```powershell
-.\Install-BridgeCLI-Windows.ps1
+.\Windows\Install-BridgeCLI-Windows.ps1
 ```
 
 #### Linux (PowerShell Core)
 ```bash
-pwsh ./Install-BridgeCLI-Linux.ps1
+pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 ```
 
 ### Step 3: Run a Security Scan
 
 #### Black Duck SCA Scan
 ```powershell
-.\Run-BlackDuckSCA-Windows.ps1 `
+.\Windows\Run-BlackDuckSCA-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-api-token" `
     -ProjectName "MyApplication" `
