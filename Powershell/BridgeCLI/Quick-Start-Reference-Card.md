@@ -1,4 +1,4 @@
-# Bridge CLI Quick Reference Card
+# Bridge CLI Quick Start Reference Card
 
 ## 🚀 Installation Commands
 
