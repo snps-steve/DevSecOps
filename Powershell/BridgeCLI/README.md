@@ -6,6 +6,7 @@ This repository contains PowerShell scripts and examples for integrating Black D
 
 - [Overview](#-overview)
 - [Integration Options Comparison](#-integration-options-comparison)
+- [Quick Start Reference Card](#-quick-start-reference-card)
 - [Prerequisites](#-prerequisites)
 - [Start](#-start)
 - [PowerShell Scripts](#-powershell-scripts)
