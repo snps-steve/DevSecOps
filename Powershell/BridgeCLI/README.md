@@ -5,6 +5,7 @@ This repository contains PowerShell scripts and examples for integrating Black D
 ## 📋 Table of Contents
 
 - [Overview](#-overview)
+- [Integration Options Comparison](#-integration-options-comparison)
 - [Prerequisites](#-prerequisites)
 - [Quick Start](#-quick-start)
 - [PowerShell Scripts](#-powershell-scripts)
@@ -36,6 +37,31 @@ This repository contains PowerShell scripts and examples for integrating Black D
    - Eliminates one layer of abstraction
    - Better for unified SCA + Coverity workflows
    - Works on both Windows and Linux agents
+
+**📊 Need help deciding?** See our detailed [Integration Options Comparison Guide](./Integration-Options-Comparison.md) for a comprehensive analysis of when to use each approach, including performance considerations, feature matrices, and migration strategies.
+
+---
+
+## 📊 Integration Options Comparison
+
+Choosing between the **Security Scan Task** and **Bridge CLI Direct Integration** depends on your specific needs. We've created a comprehensive comparison guide to help you make the right choice.
+
+**[→ View the Complete Integration Options Comparison Guide](./Integration-Options-Comparison.md)**
+
+This guide covers:
+- Detailed feature comparison matrix
+- When to use each approach
+- Performance considerations
+- Architecture differences
+- Configuration examples side-by-side
+- Hybrid approach strategies
+- Migration paths from Security Scan Task to Bridge CLI
+- Decision matrix by team size and requirements
+
+**Quick Decision Guide:**
+- **Choose Security Scan Task** if you want quick setup, UI-based configuration, and standard scanning needs
+- **Choose Bridge CLI Direct** if you need combined SCA + Coverity scans, advanced customization, or want version-controlled configuration
+- **Use Both (Hybrid)** for different scenarios: Task for simple PR scans, Bridge CLI for advanced production scans
 
 ---
 
@@ -75,20 +101,20 @@ This repository contains PowerShell scripts and examples for integrating Black D
 Clone this repository or download the PowerShell scripts:
 
 ```bash
-git clone https://github.com/snps-steve/DevSecOps/tree/main/Powershell/BridgeCLI
-cd BridgeCLI
+git clone https://your-repo-url.git
+cd bridge-cli-scripts
 ```
 
 ### Step 2: Install Bridge CLI
 
 **On Windows:**
 ```powershell
-.\Windows\Install-BridgeCLI-Windows.ps1
+.\Install-BridgeCLI-Windows.ps1
 ```
 
 **On Linux (PowerShell Core):**
 ```bash
-pwsh ./Linux/Install-BridgeCLI-Linux.ps1
+pwsh ./Install-BridgeCLI-Linux.ps1
 ```
 
 ### Step 3: Run a Security Scan
@@ -97,7 +123,7 @@ pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 
 **Windows:**
 ```powershell
-.\Windows\Run-BlackDuckSCA-Windows.ps1 `
+.\Run-BlackDuckSCA-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-api-token" `
     -ProjectName "MyApplication" `
@@ -106,7 +132,7 @@ pwsh ./Linux/Install-BridgeCLI-Linux.ps1
 
 **Linux:**
 ```bash
-pwsh ./Linux/Run-BlackDuckSCA-Linux.ps1 `
+pwsh ./Run-BlackDuckSCA-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-api-token" `
     -ProjectName "MyApplication" `
@@ -117,7 +143,7 @@ pwsh ./Linux/Run-BlackDuckSCA-Linux.ps1 `
 
 **Windows:**
 ```powershell
-.\Windows\Run-Coverity-Windows.ps1 `
+.\Run-Coverity-Windows.ps1 `
     -CoverityUrl "https://coverity.example.com" `
     -CoverityUser "admin" `
     -CoverityPassword "password" `
@@ -127,7 +153,7 @@ pwsh ./Linux/Run-BlackDuckSCA-Linux.ps1 `
 
 **Linux:**
 ```bash
-pwsh ./Linux/Run-Coverity-Linux.ps1 `
+pwsh ./Run-Coverity-Linux.ps1 `
     -CoverityUrl "https://coverity.example.com" `
     -CoverityUser "admin" `
     -CoverityPassword "password" `
@@ -139,7 +165,7 @@ pwsh ./Linux/Run-Coverity-Linux.ps1 `
 
 **Windows:**
 ```powershell
-.\Windows\Run-Combined-SCA-Coverity-Windows.ps1 `
+.\Run-Combined-SCA-Coverity-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-api-token" `
     -CoverityUrl "https://coverity.example.com" `
@@ -152,7 +178,7 @@ pwsh ./Linux/Run-Coverity-Linux.ps1 `
 
 **Linux:**
 ```bash
-pwsh ./Linux/Run-Combined-SCA-Coverity-Linux.ps1 `
+pwsh ./Run-Combined-SCA-Coverity-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-api-token" `
     -CoverityUrl "https://coverity.example.com" `
@@ -180,8 +206,8 @@ Downloads and installs Bridge CLI on Windows agents.
 - `BridgeVersion` (optional): Bridge CLI version (default: `latest`)
 
 **Example:**
-```Windows Powershell
-.\Windows\Install-BridgeCLI-Windows.ps1 -InstallDirectory "C:\tools\bridge" -BridgeVersion "latest"
+```powershell
+.\Install-BridgeCLI-Windows.ps1 -InstallDirectory "C:\tools\bridge" -BridgeVersion "latest"
 ```
 
 #### Install-BridgeCLI-Linux.ps1
@@ -194,7 +220,7 @@ Downloads and installs Bridge CLI on Linux agents using PowerShell Core.
 
 **Example:**
 ```bash
-pwsh ./Linux/Install-BridgeCLI-Linux.ps1 -InstallDirectory "/tmp/bridge" -BridgeVersion "latest"
+pwsh ./Install-BridgeCLI-Linux.ps1 -InstallDirectory "/tmp/bridge" -BridgeVersion "latest"
 ```
 
 ### Scan Scripts
@@ -214,7 +240,7 @@ Executes Black Duck SCA scan using Bridge CLI on Windows or Linux.
 
 **Example (Windows):**
 ```powershell
-.\Windows\Run-BlackDuckSCA-Windows.ps1 `
+.\Run-BlackDuckSCA-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-token" `
     -ProjectName "WebGoat" `
@@ -224,7 +250,7 @@ Executes Black Duck SCA scan using Bridge CLI on Windows or Linux.
 
 **Example (Linux):**
 ```bash
-pwsh ./Linux/Run-BlackDuckSCA-Linux.ps1 `
+pwsh ./Run-BlackDuckSCA-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-token" `
     -ProjectName "WebGoat" `
@@ -249,7 +275,7 @@ Executes Coverity scan using Bridge CLI on Windows or Linux.
 
 **Example (Windows):**
 ```powershell
-.\Windows\Run-Coverity-Windows.ps1 `
+.\Run-Coverity-Windows.ps1 `
     -CoverityUrl "https://coverity.example.com" `
     -CoverityUser "admin" `
     -CoverityPassword "password" `
@@ -260,7 +286,7 @@ Executes Coverity scan using Bridge CLI on Windows or Linux.
 
 **Example (Linux):**
 ```bash
-pwsh ./Linux/Run-Coverity-Linux.ps1 `
+pwsh ./Run-Coverity-Linux.ps1 `
     -CoverityUrl "https://coverity.example.com" `
     -CoverityUser "admin" `
     -CoverityPassword "password" `
@@ -277,7 +303,7 @@ Executes both Black Duck SCA and Coverity scans in a single Bridge CLI invocatio
 
 **Example (Windows):**
 ```powershell
-.\Windows\Run-Combined-SCA-Coverity-Windows.ps1 `
+.\Run-Combined-SCA-Coverity-Windows.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-token" `
     -CoverityUrl "https://coverity.example.com" `
@@ -290,7 +316,7 @@ Executes both Black Duck SCA and Coverity scans in a single Bridge CLI invocatio
 
 **Example (Linux):**
 ```bash
-pwsh ./Linux/Run-Combined-SCA-Coverity-Linux.ps1 `
+pwsh ./Run-Combined-SCA-Coverity-Linux.ps1 `
     -BlackDuckUrl "https://blackduck.example.com" `
     -BlackDuckToken "your-token" `
     -CoverityUrl "https://coverity.example.com" `
@@ -305,7 +331,7 @@ pwsh ./Linux/Run-Combined-SCA-Coverity-Linux.ps1 `
 
 ## 🔧 Azure DevOps Pipeline Examples
 
-### Example 1: Black Duck SCA Scan (Windows Agent) - copy the Windows scripts to '$(System.DefaultWorkingDirectory)/scripts/' if y ou haven't already.
+### Example 1: Black Duck SCA Scan (Windows Agent)
 
 ```yaml
 trigger:
@@ -339,7 +365,7 @@ steps:
     continueOnError: true
 ```
 
-### Example 2: Black Duck SCA Scan (Linux Agent) - copy the Linux scripts to '$(System.DefaultWorkingDirectory)/scripts/' if y ou haven't already.
+### Example 2: Black Duck SCA Scan (Linux Agent)
 
 ```yaml
 trigger:
@@ -375,7 +401,7 @@ steps:
     continueOnError: true
 ```
 
-### Example 3: Coverity Scan with PR Comments (Linux Agent) - copy the Linux scripts to '$(System.DefaultWorkingDirectory)/scripts/' if y ou haven't already.
+### Example 3: Coverity Scan with PR Comments (Linux Agent)
 
 ```yaml
 trigger:
@@ -420,7 +446,7 @@ steps:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 ```
 
-### Example 4: Combined SCA + Coverity Scan (Self-Hosted Linux Agent) - copy the Linux scripts to '$(System.DefaultWorkingDirectory)/scripts/' if y ou haven't already.
+### Example 4: Combined SCA + Coverity Scan (Self-Hosted Linux Agent)
 
 ```yaml
 trigger:
