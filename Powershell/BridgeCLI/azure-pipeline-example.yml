@@ -1,0 +1,254 @@
+# Azure DevOps Pipeline - Complete Security Scanning Example
+# This pipeline demonstrates integration with Black Duck Bridge CLI
+# for both SCA and Coverity scanning using PowerShell scripts
+#
+# Features:
+# - Conditional scanning based on branch/PR
+# - Automated PR comments
+# - Combined SCA + Coverity scanning
+# - Support for both Windows and Linux agents
+
+name: $(Build.DefinitionName)_$(Build.SourceBranchName)_$(Date:yyyyMMdd)$(Rev:.r)
+
+# Trigger configuration
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - feature/*
+      - release/*
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+# Pipeline variables
+variables:
+  - group: BlackDuck-Credentials  # Contains BLACKDUCK_URL, BLACKDUCK_TOKEN
+  - group: Coverity-Credentials   # Contains COVERITY_URL, COVERITY_USER, COVERITY_PASSWORD
+  - name: ProjectName
+    value: $(Build.Repository.Name)
+  - name: ProjectVersion
+    value: $(Build.SourceBranchName)
+  - name: StreamName
+    value: $(Build.Repository.Name)-$(Build.SourceBranchName)
+
+# Agent pools - customize based on your environment
+pool:
+  vmImage: 'windows-latest'  # Use 'ubuntu-latest' for Linux agents
+
+stages:
+  - stage: Build
+    displayName: 'Build Application'
+    jobs:
+      - job: BuildJob
+        displayName: 'Build and Compile'
+        steps:
+          - checkout: self
+            displayName: 'Checkout Source Code'
+            persistCredentials: true
+            clean: true
+
+          - task: Maven@3
+            displayName: 'Maven Build'
+            inputs:
+              mavenPomFile: 'pom.xml'
+              goals: 'clean package -DskipTests'
+              publishJUnitResults: false
+              javaHomeOption: 'JDKVersion'
+              jdkVersionOption: '1.11'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Build Artifacts'
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'drop'
+
+  - stage: SecurityScan_FullScan
+    displayName: 'Security Scanning (Full Scan)'
+    dependsOn: Build
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: InstallBridgeCLI
+        displayName: 'Install Bridge CLI'
+        steps:
+          - checkout: self
+            displayName: 'Checkout Scripts'
+
+          - task: PowerShell@2
+            displayName: 'Install Bridge CLI (Windows)'
+            inputs:
+              filePath: '$(System.DefaultWorkingDirectory)/scripts/Install-BridgeCLI-Windows.ps1'
+              arguments: '-BridgeVersion "latest"'
+              errorActionPreference: 'stop'
+              failOnStderr: false
+              pwsh: false  # Use 'true' for PowerShell Core on Linux
+
+      - job: BlackDuckSCAScan
+        displayName: 'Black Duck SCA Scan'
+        dependsOn: InstallBridgeCLI
+        steps:
+          - checkout: self
+            displayName: 'Checkout Source Code'
+            clean: false
+
+          - task: PowerShell@2
+            displayName: 'Black Duck Full Scan'
+            inputs:
+              filePath: '$(System.DefaultWorkingDirectory)/scripts/Run-BlackDuckSCA-Windows.ps1'
+              arguments: >
+                -BlackDuckUrl "$(BLACKDUCK_URL)"
+                -BlackDuckToken "$(BLACKDUCK_TOKEN)"
+                -ProjectName "$(ProjectName)"
+                -ProjectVersion "$(ProjectVersion)"
+                -ScanMode "full"
+              errorActionPreference: 'continue'
+              failOnStderr: false
+              pwsh: false
+            continueOnError: true
+            timeoutInMinutes: 45
+
+      - job: CoverityScan
+        displayName: 'Coverity SAST Scan'
+        dependsOn: InstallBridgeCLI
+        steps:
+          - checkout: self
+            displayName: 'Checkout Source Code'
+            clean: false
+
+          - task: PowerShell@2
+            displayName: 'Coverity Full Scan'
+            inputs:
+              filePath: '$(System.DefaultWorkingDirectory)/scripts/Run-Coverity-Windows.ps1'
+              arguments: >
+                -CoverityUrl "$(COVERITY_URL)"
+                -CoverityUser "$(COVERITY_USER)"
+                -CoverityPassword "$(COVERITY_PASSWORD)"
+                -ProjectName "$(ProjectName)"
+                -StreamName "$(StreamName)"
+                -ScanMode "full"
+              errorActionPreference: 'continue'
+              failOnStderr: false
+              pwsh: false
+            continueOnError: true
+            timeoutInMinutes: 45
+
+  - stage: SecurityScan_PRScan
+    displayName: 'Security Scanning (Pull Request)'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: PRSecurityScan
+        displayName: 'Combined PR Security Scan'
+        steps:
+          - checkout: self
+            displayName: 'Checkout Source Code'
+            persistCredentials: true
+            clean: true
+
+          - task: PowerShell@2
+            displayName: 'Install Bridge CLI'
+            inputs:
+              filePath: '$(System.DefaultWorkingDirectory)/scripts/Install-BridgeCLI-Windows.ps1'
+              arguments: '-BridgeVersion "latest"'
+              errorActionPreference: 'stop'
+              failOnStderr: false
+
+          - task: PowerShell@2
+            displayName: 'Combined Security Scan (SCA + Coverity)'
+            inputs:
+              filePath: '$(System.DefaultWorkingDirectory)/scripts/Run-Combined-SCA-Coverity-Windows.ps1'
+              arguments: >
+                -BlackDuckUrl "$(BLACKDUCK_URL)"
+                -BlackDuckToken "$(BLACKDUCK_TOKEN)"
+                -CoverityUrl "$(COVERITY_URL)"
+                -CoverityUser "$(COVERITY_USER)"
+                -CoverityPassword "$(COVERITY_PASSWORD)"
+                -ProjectName "$(ProjectName)"
+                -ProjectVersion "$(System.PullRequest.TargetBranch)"
+                -StreamName "$(Build.Repository.Name)-$(System.PullRequest.TargetBranch)"
+                -ScanMode "pr"
+                -AzureToken "$(System.AccessToken)"
+              errorActionPreference: 'continue'
+              failOnStderr: false
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+            continueOnError: true
+            timeoutInMinutes: 30
+
+          - task: PowerShell@2
+            displayName: 'Display PR Scan Summary'
+            condition: always()
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Pull Request Security Scan Summary" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "PR Number: $(System.PullRequest.PullRequestId)" -ForegroundColor Green
+                Write-Host "Source Branch: $(System.PullRequest.SourceBranch)" -ForegroundColor Green
+                Write-Host "Target Branch: $(System.PullRequest.TargetBranch)" -ForegroundColor Green
+                Write-Host ""
+                Write-Host "Review detailed results in PR comments above" -ForegroundColor Yellow
+                Write-Host "or visit the Black Duck and Coverity servers directly." -ForegroundColor Yellow
+
+  - stage: Deploy
+    displayName: 'Deploy to Kubernetes'
+    dependsOn: 
+      - SecurityScan_FullScan
+      - SecurityScan_PRScan
+    condition: |
+      and(
+        succeeded(),
+        eq(variables['Build.SourceBranch'], 'refs/heads/main')
+      )
+    jobs:
+      - deployment: DeployToK8s
+        displayName: 'Deploy to Kubernetes'
+        environment: 'Production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: KubernetesManifest@0
+                  displayName: 'Deploy to Kubernetes'
+                  inputs:
+                    action: 'deploy'
+                    kubernetesServiceConnection: 'k8s-connection'
+                    namespace: 'production'
+                    manifests: |
+                      $(Pipeline.Workspace)/drop/k8s/*.yaml
+
+# Additional optional stages for reporting
+  - stage: SecurityReporting
+    displayName: 'Security Scan Reporting'
+    dependsOn: 
+      - SecurityScan_FullScan
+      - SecurityScan_PRScan
+    condition: always()
+    jobs:
+      - job: GenerateReport
+        displayName: 'Generate Security Report'
+        steps:
+          - task: PowerShell@2
+            displayName: 'Generate Pipeline Summary'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Security Scanning Pipeline Summary" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "Pipeline: $(Build.DefinitionName)" -ForegroundColor Green
+                Write-Host "Build ID: $(Build.BuildId)" -ForegroundColor Green
+                Write-Host "Repository: $(Build.Repository.Name)" -ForegroundColor Green
+                Write-Host "Branch: $(Build.SourceBranchName)" -ForegroundColor Green
+                Write-Host ""
+                Write-Host "Access detailed scan results:" -ForegroundColor Yellow
+                Write-Host "  Black Duck: $(BLACKDUCK_URL)" -ForegroundColor Cyan
+                Write-Host "  Coverity: $(COVERITY_URL)" -ForegroundColor Cyan
+                Write-Host ""
